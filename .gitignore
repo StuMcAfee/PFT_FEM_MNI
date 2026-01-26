@@ -78,3 +78,6 @@ dmypy.json
 *.msh
 output/
 results/
+
+# Exception for precomputed solver mesh (required for package)
+!data/solvers/default_posterior_fossa/mesh.vtu
