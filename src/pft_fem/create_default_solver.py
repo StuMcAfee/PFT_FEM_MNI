@@ -8,7 +8,7 @@ This script generates a precomputed solver with default parameters:
 - Bundled MNI152 tissue segmentation
 - Bundled HCP1065 DTI fiber orientations
 - Fixed boundary conditions
-- Coarse mesh (3mm voxels) for fast simulation with high-res output interpolation
+- Coarse mesh (4mm voxels) for fast simulation with high-res output interpolation
 
 The precomputed solver can be loaded with TumorGrowthSolver.load_default()
 for ~100x faster initialization compared to building from scratch.
@@ -25,7 +25,7 @@ from pathlib import Path
 
 def create_default_solver(
     output_dir: Path = None,
-    mesh_voxel_size: float = 3.0,
+    mesh_voxel_size: float = 4.0,
 ) -> None:
     """
     Create and save the default precomputed solver.
@@ -261,8 +261,8 @@ def main():
     parser.add_argument(
         "--mesh-voxel-size",
         type=float,
-        default=3.0,
-        help="Mesh voxel size in mm (default: 3.0 for fast coarse simulation)",
+        default=4.0,
+        help="Mesh voxel size in mm (default: 4.0 for fast coarse simulation)",
     )
 
     args = parser.parse_args()
