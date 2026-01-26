@@ -3,19 +3,27 @@ Biophysical constraints module for realistic brain tissue modeling.
 
 This module provides:
 - Tissue segmentation (white/gray matter, CSF) from ICBM-152 MNI atlases
-- Fiber orientation data from JHU DTI atlas
+- Fiber orientation data from HCP1065 DTI atlas (enabled by default)
 - Posterior fossa region masking (cerebellum + brainstem)
+- Skull boundary detection from non-skull-stripped T1 template
 - Anisotropic material properties based on tissue microstructure
 - Optional SUIT space transformation for cerebellar-focused analysis
 
 Default configuration:
-- Template: ICBM-152 in MNI space
+- Template: ICBM-152 2009c nonlinear asymmetric (non-skull-stripped)
 - Tumor origin: MNI coordinates [2, -49, -35] (vermis/fourth ventricle region)
 - Modeled region: Posterior fossa (cerebellum + brainstem only)
+- DTI constraints: Enabled by default (HCP1065 fiber orientations)
+- Skull boundary: Detected from non-skull-stripped T1 for fixed boundary conditions
+
+The non-skull-stripped T1 template is essential for:
+- Clear skull boundary detection for fixed displacement constraints
+- Realistic modeling of tumor mass effect limited by skull
+- Accurate CSF/dura interface identification
 
 References:
-- ICBM-152: Fonov et al., NeuroImage 2011
-- JHU DTI Atlas: Mori et al., MRI Atlas of Human White Matter, 2005
+- ICBM-152 2009c: Fonov et al., NeuroImage 2011
+- HCP1065 DTI: FSL, derived from Human Connectome Project
 - SUIT Atlas: Diedrichsen et al., NeuroImage 2006
 """
 
@@ -1374,6 +1382,8 @@ class BiophysicalConstraints:
         use_suit_space: bool = False,  # Default to MNI/ICBM152 space
         posterior_fossa_only: bool = True,  # Only model cerebellum + brainstem
         tumor_origin: Optional[NDArray[np.float64]] = None,
+        use_dti_constraints: bool = True,  # Enable DTI-based anisotropic constraints by default
+        use_non_skull_stripped: bool = True,  # Use non-skull-stripped T1 for boundary detection
     ):
         """
         Initialize biophysical constraints.
@@ -1386,13 +1396,21 @@ class BiophysicalConstraints:
             posterior_fossa_only: If True, only include cerebellum and brainstem
                                  tissues in the model. Default is True.
             tumor_origin: Tumor seed location in MNI coordinates.
-                         Default is [1, -61, -34] (vermis).
+                         Default is [2, -49, -35] (vermis/fourth ventricle).
+            use_dti_constraints: If True (default), incorporate DTI-based fiber
+                                orientation for anisotropic white matter properties.
+                                Uses HCP1065 atlas when available.
+            use_non_skull_stripped: If True (default), use the non-skull-stripped
+                                   T1 template (ICBM 2009c) for skull boundary
+                                   detection. Essential for accurate boundary conditions.
         """
         self.suit = SUITPyIntegration(suit_dir)
         self.mni = MNIAtlasLoader(fsl_dir)
         self.transformer = SpaceTransformer(self.suit, self.mni)
         self.use_suit_space = use_suit_space
         self.posterior_fossa_only = posterior_fossa_only
+        self.use_dti_constraints = use_dti_constraints
+        self.use_non_skull_stripped = use_non_skull_stripped
 
         # Set tumor origin (default: vermis in MNI space)
         self.tumor_origin = tumor_origin if tumor_origin is not None else self.DEFAULT_TUMOR_ORIGIN.copy()
@@ -1401,14 +1419,144 @@ class BiophysicalConstraints:
         self._fibers: Optional[FiberOrientation] = None
         self._skull_boundary: Optional[NDArray[np.bool_]] = None
         self._posterior_fossa_mask: Optional[NDArray[np.bool_]] = None
+        self._skull_template: Optional[NDArray[np.float32]] = None
 
     def load_all_constraints(self) -> None:
-        """Load all biophysical constraint data."""
+        """
+        Load all biophysical constraint data.
+
+        This loads:
+        - Posterior fossa mask (if posterior_fossa_only=True)
+        - Tissue segmentation (GM, WM, CSF)
+        - Fiber orientation from DTI (if use_dti_constraints=True)
+        - Skull boundary from non-skull-stripped T1 (if use_non_skull_stripped=True)
+        """
         if self.posterior_fossa_only:
             self.compute_posterior_fossa_mask()
         self.load_tissue_segmentation()
-        self.load_fiber_orientation()
+        if self.use_dti_constraints:
+            self.load_fiber_orientation()
+        if self.use_non_skull_stripped:
+            self.load_skull_template()
         self.compute_skull_boundary()
+
+    def load_skull_template(self) -> Optional[NDArray[np.float32]]:
+        """
+        Load the non-skull-stripped T1 template for skull boundary detection.
+
+        The non-skull-stripped ICBM 2009c template provides clear skull boundaries
+        that are essential for defining fixed displacement boundary conditions.
+
+        Returns:
+            T1 template data with skull visible, or None if not available.
+        """
+        if self._skull_template is not None:
+            return self._skull_template
+
+        try:
+            import nibabel as nib
+        except ImportError:
+            warnings.warn("nibabel not available, cannot load skull template")
+            return None
+
+        # Look for non-skull-stripped T1 in bundled MNI directory
+        mni_dir = self.mni.DEFAULT_MNI_DIR
+        template_path = mni_dir / "mni_icbm152_t1_tal_nlin_asym_09c.nii.gz"
+
+        if not template_path.exists():
+            # Try alternate names
+            for alt_name in ["MNI152_T1_1mm.nii.gz", "mni_icbm152_t1.nii.gz"]:
+                alt_path = mni_dir / alt_name
+                if alt_path.exists():
+                    template_path = alt_path
+                    break
+
+        if template_path.exists():
+            img = nib.load(template_path)
+            self._skull_template = np.asarray(img.get_fdata(), dtype=np.float32)
+            return self._skull_template
+
+        warnings.warn(
+            f"Non-skull-stripped T1 template not found at {template_path}. "
+            "Skull boundary detection will use intensity thresholding instead."
+        )
+        return None
+
+    def detect_skull_from_template(
+        self,
+        template: Optional[NDArray[np.float32]] = None,
+    ) -> NDArray[np.bool_]:
+        """
+        Detect skull boundary from non-skull-stripped T1 template.
+
+        Skull appears as a bright ring in T1 images due to fat in bone marrow.
+        This method uses intensity thresholding and morphological operations
+        to isolate the skull boundary.
+
+        Args:
+            template: T1 template data. If None, uses loaded skull template.
+
+        Returns:
+            Boolean mask of skull voxels.
+        """
+        from scipy import ndimage
+
+        if template is None:
+            template = self.load_skull_template()
+            if template is None:
+                # Fall back to edge-based detection from segmentation
+                return self._detect_skull_from_segmentation()
+
+        # Skull detection from non-skull-stripped T1:
+        # 1. Skull appears bright (bone marrow fat has short T1)
+        # 2. Located at outer edge of brain
+        # 3. Forms a shell structure
+
+        # Normalize template
+        nonzero = template > 0
+        if np.sum(nonzero) == 0:
+            return np.zeros(template.shape, dtype=bool)
+
+        vals = template[nonzero]
+        p_high = np.percentile(vals, 95)  # Bright voxels (skull + some WM)
+
+        # Initial bright voxel mask
+        bright_mask = template > p_high * 0.7
+
+        # Create brain mask (interior)
+        brain_threshold = np.percentile(vals, 30)
+        brain_mask = template > brain_threshold
+
+        # Fill holes in brain mask
+        brain_filled = ndimage.binary_fill_holes(brain_mask)
+
+        # Dilate brain mask to include skull
+        brain_dilated = ndimage.binary_dilation(brain_filled, iterations=5)
+
+        # Skull is bright voxels that are:
+        # 1. At the edge of the dilated brain mask
+        # 2. Not in the interior brain mask
+        edge_mask = brain_dilated & ~ndimage.binary_erosion(brain_dilated, iterations=3)
+        skull_mask = bright_mask & edge_mask
+
+        # Clean up with morphological operations
+        skull_mask = ndimage.binary_opening(skull_mask, iterations=1)
+        skull_mask = ndimage.binary_closing(skull_mask, iterations=2)
+
+        return skull_mask
+
+    def _detect_skull_from_segmentation(self) -> NDArray[np.bool_]:
+        """Fall back skull detection using tissue segmentation edges."""
+        from scipy import ndimage
+
+        segmentation = self.load_tissue_segmentation()
+        brain_mask = segmentation.labels > 0
+
+        # Skull is the outer boundary of the brain
+        dilated = ndimage.binary_dilation(brain_mask, iterations=3)
+        skull_mask = dilated & ~brain_mask
+
+        return skull_mask
 
     def compute_posterior_fossa_mask(self) -> NDArray[np.bool_]:
         """
@@ -1574,22 +1722,25 @@ class BiophysicalConstraints:
         """
         Compute skull boundary mask for immovable boundary condition.
 
+        Uses the non-skull-stripped T1 template when available for accurate
+        skull detection. Falls back to segmentation-based edge detection
+        if the template is not available.
+
         Returns:
             Boolean mask indicating skull voxels
         """
         if self._skull_boundary is not None:
             return self._skull_boundary
 
-        segmentation = self.load_tissue_segmentation()
+        # Use skull template if available and enabled
+        if self.use_non_skull_stripped:
+            skull_template = self.load_skull_template()
+            if skull_template is not None:
+                self._skull_boundary = self.detect_skull_from_template(skull_template)
+                return self._skull_boundary
 
-        # Skull is the outer boundary of the brain
-        # Dilate the brain mask and take the shell
-        from scipy import ndimage
-
-        brain_mask = segmentation.labels > 0
-        dilated = ndimage.binary_dilation(brain_mask, iterations=3)
-        self._skull_boundary = dilated & ~brain_mask
-
+        # Fall back to segmentation-based detection
+        self._skull_boundary = self._detect_skull_from_segmentation()
         return self._skull_boundary
 
     def get_material_properties_at_node(

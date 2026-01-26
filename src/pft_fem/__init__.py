@@ -2,19 +2,35 @@
 PFT_FEM: Posterior Fossa Tumor Finite Element Modeling
 
 A pipeline for simulating MRI images by modeling tumor growth in the
-posterior cranial fossa using finite element methods, starting from
-the SUIT cerebellar atlas.
+posterior cranial fossa using finite element methods.
 
-Includes biophysical constraints for realistic brain tissue modeling:
-- White matter: Anisotropic, resists stretching along fiber direction
-- Gray matter: Compressible uniformly, isotropic
-- Skull boundary: Immovable constraint
+Default configuration uses MNI152 space (ICBM 2009c) with:
+- Non-skull-stripped T1 template for skull boundary constraints
+- HCP1065 DTI-based fiber orientation for anisotropic tissue properties
+- Posterior fossa restriction (cerebellum + brainstem)
+- Tumor origin at MNI coordinates (2, -49, -35) - vermis/fourth ventricle
+
+Key features:
+- White matter: Anisotropic properties based on DTI fiber orientation
+- Gray matter: Isotropic, uniformly compressible
+- Skull boundary: Fixed displacement from non-skull-stripped T1
 - Tissue-specific diffusion: Enhanced along white matter tracts
+
+Quick start:
+    from pft_fem import MNIAtlasLoader, MRISimulator, TumorParameters
+
+    # Load MNI atlas (default: non-skull-stripped T1, DTI enabled)
+    loader = MNIAtlasLoader()
+    atlas = loader.load()
+
+    # Run simulation with default MNI tumor origin
+    simulator = MRISimulator(atlas)
+    result = simulator.run_full_pipeline(duration_days=365)
 """
 
 __version__ = "0.1.0"
 
-from .atlas import SUITAtlasLoader, AtlasProcessor
+from .atlas import SUITAtlasLoader, MNIAtlasLoader, DefaultAtlasLoader, AtlasProcessor
 from .mesh import MeshGenerator, TetMesh
 from .fem import TumorGrowthSolver, MaterialProperties, TissueType, TumorState, SolverConfig
 from .simulation import MRISimulator, TumorParameters, MRISequence, SimulationResult
@@ -27,15 +43,17 @@ from .biophysical_constraints import (
     FiberOrientation,
     AnisotropicMaterialProperties,
     SUITPyIntegration,
-    MNIAtlasLoader,
+    MNIAtlasLoader as MNIBiophysicalLoader,  # Alias for backwards compatibility
     SpaceTransformer,
     DEFAULT_TUMOR_ORIGIN_MNI,
     POSTERIOR_FOSSA_BOUNDS_MNI,
 )
 
 __all__ = [
-    # Atlas loading
-    "SUITAtlasLoader",
+    # Atlas loading (MNI-first)
+    "MNIAtlasLoader",
+    "DefaultAtlasLoader",
+    "SUITAtlasLoader",  # Legacy SUIT support
     "AtlasProcessor",
     # Mesh generation
     "MeshGenerator",
@@ -66,9 +84,8 @@ __all__ = [
     "FiberOrientation",
     "AnisotropicMaterialProperties",
     "SUITPyIntegration",
-    "MNIAtlasLoader",
     "SpaceTransformer",
-    # Default parameters
+    # Default parameters (MNI space)
     "DEFAULT_TUMOR_ORIGIN_MNI",
     "POSTERIOR_FOSSA_BOUNDS_MNI",
 ]

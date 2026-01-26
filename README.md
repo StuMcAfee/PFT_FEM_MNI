@@ -1,10 +1,11 @@
 # PFT_FEM: Posterior Fossa Tumor Finite Element Modeling
 
-A scientific computing pipeline that simulates MRI images by modeling tumor growth in the posterior cranial fossa (cerebellum region) using finite element methods (FEM).
+A scientific computing pipeline that simulates MRI images by modeling tumor growth in the posterior cranial fossa (cerebellum and brainstem) using finite element methods (FEM).
 
 ## Table of Contents
 
 - [Overview](#overview)
+- [Key Features](#key-features)
 - [Installation](#installation)
 - [Quick Start](#quick-start)
 - [Pipeline Architecture](#pipeline-architecture)
@@ -27,30 +28,59 @@ A scientific computing pipeline that simulates MRI images by modeling tumor grow
 
 ## Overview
 
-PFT_FEM generates synthetic MRI data showing realistic tumor progression in the cerebellum. Starting from a SUIT (Spatially Unbiased Infratentorial Template) cerebellar atlas, it:
+PFT_FEM generates synthetic MRI data showing realistic tumor progression in the posterior fossa. The pipeline uses MNI152 space (ICBM 2009c) by default with biophysical constraints from DTI data. It:
 
-1. Loads anatomical brain atlas data
-2. Generates a tetrahedral finite element mesh
-3. Simulates tumor growth using reaction-diffusion equations
-4. Models tissue deformation due to tumor mass effect
-5. Produces synthetic MRI images in multiple sequences
+1. Loads anatomical brain atlas data (MNI152 space by default)
+2. Applies biophysical constraints from DTI fiber orientations
+3. Generates a tetrahedral finite element mesh
+4. Simulates tumor growth using reaction-diffusion equations
+5. Models tissue deformation with skull boundary constraints
+6. Produces synthetic MRI images in multiple sequences
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                           PFT_FEM PIPELINE OVERVIEW                         │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
-│   SUIT Atlas ──► Mesh Generation ──► FEM Simulation ──► MRI Synthesis      │
+│   MNI152 Atlas ──► DTI Constraints ──► FEM Simulation ──► MRI Synthesis    │
 │                                                                             │
 │   ┌─────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐     │
-│   │ NIfTI   │    │ Tetrahedral │    │ Tumor Cell  │    │ T1, T2,     │     │
-│   │ Volume  │───►│ Mesh        │───►│ Density +   │───►│ FLAIR, DWI  │     │
-│   │ Labels  │    │ (Nodes +    │    │ Displacement│    │ Images      │     │
-│   └─────────┘    │ Elements)   │    └─────────────┘    └─────────────┘     │
-│                  └─────────────┘                                            │
+│   │ T1 (non-│    │ HCP1065     │    │ Tumor Cell  │    │ T1, T2,     │     │
+│   │ skull-  │───►│ Fiber       │───►│ Density +   │───►│ FLAIR, DWI  │     │
+│   │ stripped│    │ Orientation │    │ Displacement│    │ Images      │     │
+│   └─────────┘    └─────────────┘    └─────────────┘    └─────────────┘     │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
+
+---
+
+## Key Features
+
+### MNI152 Space (Default)
+
+- **Non-skull-stripped T1 template**: ICBM 2009c nonlinear asymmetric template with visible skull boundaries for accurate boundary conditions
+- **1mm isotropic resolution**: 182×218×182 voxels for high-fidelity simulation
+- **Tissue segmentation**: GM, WM, CSF probability maps from FSL FAST
+
+### DTI-Based Biophysical Constraints
+
+- **HCP1065 fiber orientations**: Principal diffusion directions from Human Connectome Project data
+- **Anisotropic white matter**: Transversely isotropic material properties aligned with fiber tracts
+- **Tissue-specific diffusion**: Tumor cells migrate faster along white matter fibers
+
+### Posterior Fossa Focus
+
+- **Default tumor origin**: MNI coordinates (2.0, -49.0, -35.0) in vermis/fourth ventricle region
+- **Anatomical bounds**: Automatic restriction to cerebellum and brainstem
+- **Skull boundary**: Fixed displacement constraints from non-skull-stripped T1
+
+### Non-Infiltrative Tumor Model
+
+Default parameters configured for expansile mass tumors (e.g., medulloblastoma):
+- High proliferation rate (0.04 /day) for solid mass growth
+- Very low diffusion rate (0.01 mm²/day) for minimal infiltration
+- Small initial seed (2.5mm) that expands over time
 
 ---
 
@@ -115,43 +145,74 @@ python -c "import pft_fem; print(pft_fem.__version__)"
 After installation, the `pft-simulate` command will be available:
 
 ```bash
-# Run with default parameters (synthetic atlas, 30-day simulation)
+# Run with default MNI parameters (365-day simulation in vermis)
 pft-simulate -o ./output -v
 
-# Run with custom tumor parameters
+# Run with custom tumor parameters (still in MNI space)
 pft-simulate -o ./results \
-    --tumor-center 10 -5 0 \
-    --tumor-radius 5.0 \
-    --duration 45 \
-    --sequences T1 T2 FLAIR \
+    --tumor-center 2.0 -49.0 -35.0 \
+    --tumor-radius 2.5 \
+    --duration 365 \
+    --sequences T1 T2 FLAIR T1_contrast \
     -v
+
+# Use legacy SUIT space instead of MNI
+pft-simulate -o ./output --use-suit -v
 ```
 
 ### Python API
 
 ```python
-from pft_fem import SUITAtlasLoader, MRISimulator, TumorParameters
+from pft_fem import MNIAtlasLoader, MRISimulator, TumorParameters
 from pft_fem.io import NIfTIWriter
 
-# Load atlas (uses synthetic if no real atlas provided)
-loader = SUITAtlasLoader()
+# Load MNI atlas with non-skull-stripped T1 and DTI constraints
+loader = MNIAtlasLoader(
+    posterior_fossa_only=True,      # Focus on cerebellum + brainstem
+    use_non_skull_stripped=True,    # Use T1 with skull visible
+)
 atlas_data = loader.load()
 
-# Configure tumor parameters
+# Configure tumor parameters (uses MNI default center if not specified)
 tumor_params = TumorParameters(
-    center=(0.0, 0.0, 0.0),
-    initial_radius=5.0,
-    proliferation_rate=0.012,
-    diffusion_rate=0.15
+    # center defaults to (2.0, -49.0, -35.0) - vermis/fourth ventricle
+    initial_radius=2.5,             # Small seed for growth simulation
+    proliferation_rate=0.04,        # High rate for solid mass
+    diffusion_rate=0.01,            # Low rate for non-infiltrative tumor
 )
 
 # Run simulation
 simulator = MRISimulator(atlas_data, tumor_params)
-result = simulator.run_full_pipeline(duration_days=30, verbose=True)
+result = simulator.run_full_pipeline(duration_days=365, verbose=True)
 
 # Save results
 writer = NIfTIWriter(output_dir="./output", affine=atlas_data.affine)
 output_paths = writer.write_simulation_results(result)
+```
+
+### With Biophysical Constraints
+
+```python
+from pft_fem import MNIAtlasLoader, MRISimulator
+from pft_fem.biophysical_constraints import BiophysicalConstraints
+
+# Load atlas
+atlas = MNIAtlasLoader().load()
+
+# Load biophysical constraints (DTI enabled by default)
+constraints = BiophysicalConstraints(
+    use_dti_constraints=True,       # Use HCP1065 fiber orientations
+    use_non_skull_stripped=True,    # Skull boundary from T1
+    posterior_fossa_only=True,      # Restrict to cerebellum + brainstem
+)
+constraints.load_all_constraints()
+
+# Access fiber orientation at a point
+fibers = constraints.load_fiber_orientation()
+direction = fibers.get_direction_at_point([2.0, -49.0, -35.0])
+
+# Get skull boundary mask
+skull_mask = constraints.compute_skull_boundary()
 ```
 
 ---
@@ -167,9 +228,9 @@ output_paths = writer.write_simulation_results(result)
   ═══════════            ═══════════════════                 ═══════════════
 
   ┌───────────┐
-  │ SUIT Atlas│          ┌─────────────────┐
-  │ Directory │─────────►│  STEP 1: ATLAS  │
-  │ (optional)│          │    LOADING      │
+  │MNI152 + │          ┌─────────────────┐
+  │DTI Atlas│─────────►│  STEP 1: ATLAS  │
+  │(default) │          │    LOADING      │
   └───────────┘          └────────┬────────┘
                                   │
                                   ▼
@@ -247,19 +308,24 @@ output_paths = writer.write_simulation_results(result)
 
 ### Step 1: Atlas Loading
 
-The pipeline begins by loading anatomical reference data from the SUIT cerebellar atlas.
+The pipeline begins by loading anatomical reference data from MNI152 space (default) or SUIT cerebellar atlas.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                         STEP 1: ATLAS LOADING                               │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
-│  INPUT FILES (Optional - uses synthetic if not provided)                    │
+│  INPUT FILES (MNI152 space - bundled with package)                          │
 │  ════════════════════════════════════════════════════════                   │
 │                                                                             │
-│  atlas_directory/                                                           │
-│  ├── SUIT_template.nii.gz    ◄── T1-weighted template image                 │
-│  └── SUIT_labels.nii.gz      ◄── Integer label volume (1-30)                │
+│  data/atlases/MNI152/                                                       │
+│  ├── mni_icbm152_t1_tal_nlin_asym_09c.nii.gz  ◄── Non-skull-stripped T1    │
+│  ├── MNI152_T1_1mm_Brain_FAST_seg.nii.gz      ◄── Tissue labels (GM/WM/CSF)│
+│  └── MNI152_T1_1mm_Brain_FAST_pve_*.nii.gz    ◄── Probability maps         │
+│                                                                             │
+│  data/atlases/HCP1065_DTI/                                                  │
+│  ├── FSL_HCP1065_FA_1mm.nii.gz               ◄── Fractional anisotropy     │
+│  └── FSL_HCP1065_V1_1mm.nii.gz               ◄── Fiber orientation vectors │
 │                                                                             │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
@@ -267,9 +333,9 @@ The pipeline begins by loading anatomical reference data from the SUIT cerebella
 │  ══════════                                                                 │
 │                                                                             │
 │  ┌─────────────────┐      ┌─────────────────┐      ┌─────────────────┐     │
-│  │ Load NIfTI or   │      │ Extract affine  │      │ Build region    │     │
-│  │ generate        │─────►│ transformation  │─────►│ dictionary      │     │
-│  │ synthetic       │      │ matrix          │      │ (label→name)    │     │
+│  │ Load T1 + DTI   │      │ Extract affine  │      │ Apply posterior │     │
+│  │ templates       │─────►│ + skull mask    │─────►│ fossa bounds    │     │
+│  │ (MNIAtlasLoader)│      │ from T1         │      │ (MNI coords)    │     │
 │  └─────────────────┘      └─────────────────┘      └─────────────────┘     │
 │                                                                             │
 ├─────────────────────────────────────────────────────────────────────────────┤
@@ -280,11 +346,11 @@ The pipeline begins by loading anatomical reference data from the SUIT cerebella
 │  ┌─────────────────────────────────────────────────────────────────────┐   │
 │  │ AtlasData                                                           │   │
 │  ├─────────────────────────────────────────────────────────────────────┤   │
-│  │ template:   NDArray[float32]  │ Shape: (91, 109, 91)                │   │
-│  │ labels:     NDArray[int32]    │ Values: 0-30                        │   │
-│  │ affine:     NDArray[float64]  │ 4x4 transformation matrix           │   │
-│  │ voxel_size: tuple[float, ...] │ (2.0, 2.0, 2.0) mm                  │   │
-│  │ regions:    dict[int, str]    │ {1: "Left_I_IV", 2: "Right_I_IV"...}│   │
+│  │ template:   NDArray[float32]  │ Shape: (182, 218, 182) @ 1mm        │   │
+│  │ labels:     NDArray[int32]    │ Values: 0=BG, 1=CSF, 2=GM, 3=WM     │   │
+│  │ affine:     NDArray[float64]  │ 4x4 MNI transformation matrix       │   │
+│  │ voxel_size: tuple[float, ...] │ (1.0, 1.0, 1.0) mm                  │   │
+│  │ regions:    dict[int, str]    │ {1: "CSF", 2: "Gray Matter", ...}   │   │
 │  └─────────────────────────────────────────────────────────────────────┘   │
 │                                                                             │
 ├─────────────────────────────────────────────────────────────────────────────┤
@@ -315,14 +381,18 @@ The pipeline begins by loading anatomical reference data from the SUIT cerebella
 
 **Code Example:**
 ```python
-from pft_fem import SUITAtlasLoader
+from pft_fem import MNIAtlasLoader
 
-# Option 1: Load real SUIT atlas
-loader = SUITAtlasLoader(atlas_dir="/path/to/suit/atlas")
+# Option 1: Load MNI152 atlas (default - non-skull-stripped T1 + DTI)
+loader = MNIAtlasLoader(
+    posterior_fossa_only=True,      # Restrict to cerebellum + brainstem
+    use_non_skull_stripped=True,    # Use T1 with visible skull boundaries
+)
 atlas_data = loader.load()
 
-# Option 2: Use synthetic atlas (default)
-loader = SUITAtlasLoader()
+# Option 2: Use legacy SUIT atlas
+from pft_fem import SUITAtlasLoader
+loader = SUITAtlasLoader(atlas_dir="/path/to/suit/atlas")
 atlas_data = loader.load()
 
 print(f"Atlas shape: {atlas_data.shape}")
@@ -864,7 +934,7 @@ pft-simulate -o ./results \
 
 ```python
 from pft_fem import (
-    SUITAtlasLoader,
+    MNIAtlasLoader,
     AtlasProcessor,
     MeshGenerator,
     TumorGrowthSolver,
@@ -876,8 +946,8 @@ from pft_fem import (
 )
 from pft_fem.io import NIfTIWriter
 
-# Step 1: Load Atlas
-loader = SUITAtlasLoader()
+# Step 1: Load MNI Atlas (with non-skull-stripped T1 and DTI)
+loader = MNIAtlasLoader()
 atlas_data = loader.load()
 print(f"Loaded atlas: {atlas_data.shape}")
 
@@ -938,15 +1008,15 @@ writer = NIfTIWriter(output_dir="./output", affine=atlas_data.affine)
 ### Using the High-Level API
 
 ```python
-from pft_fem import SUITAtlasLoader, MRISimulator, TumorParameters
+from pft_fem import MNIAtlasLoader, MRISimulator, TumorParameters
 
-# Configure and run in one call
-loader = SUITAtlasLoader()
+# Configure and run in one call (uses MNI space by default)
+loader = MNIAtlasLoader()
 atlas_data = loader.load()
 
 tumor_params = TumorParameters(
-    center=(5.0, -3.0, 0.0),
-    initial_radius=6.0,
+    # center defaults to MNI (2.0, -49.0, -35.0) - vermis
+    initial_radius=2.5,
     proliferation_rate=0.015,
     diffusion_rate=0.2
 )
@@ -1314,13 +1384,13 @@ pft-simulate -o ./lateral_tumor \
 ### Example 4: Python - Time Series Analysis
 
 ```python
-from pft_fem import SUITAtlasLoader, MRISimulator, TumorParameters
+from pft_fem import MNIAtlasLoader, MRISimulator, TumorParameters
 import matplotlib.pyplot as plt
 
-# Setup
-loader = SUITAtlasLoader()
+# Setup (uses MNI space with DTI constraints by default)
+loader = MNIAtlasLoader()
 atlas_data = loader.load()
-tumor_params = TumorParameters(center=(0, 0, 0), initial_radius=5.0)
+tumor_params = TumorParameters()  # Uses MNI default center
 simulator = MRISimulator(atlas_data, tumor_params)
 simulator.setup()
 

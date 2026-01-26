@@ -3,6 +3,18 @@ MRI Simulation module for generating synthetic images.
 
 Combines atlas data, tumor growth simulation, and MRI signal modeling
 to produce realistic synthetic NIfTI images.
+
+Default configuration uses MNI152 space (ICBM 2009c) with:
+- Non-skull-stripped T1 template for skull boundary constraints
+- HCP1065 DTI-based fiber orientation for anisotropic tissue properties
+- Posterior fossa restriction (cerebellum + brainstem)
+- Tumor origin at MNI coordinates (2, -49, -35) - vermis/fourth ventricle
+
+The default tumor parameters are configured for non-infiltrative expansile
+masses (e.g., medulloblastoma, pilocytic astrocytoma) with:
+- High proliferation rate (0.04 /day) for solid mass growth
+- Very low diffusion rate (0.01 mm²/day) for minimal infiltration
+- Small initial seed (2.5mm radius) that expands over time
 """
 
 from dataclasses import dataclass, field
@@ -12,10 +24,11 @@ from enum import Enum
 import numpy as np
 from numpy.typing import NDArray
 
-from .atlas import AtlasData, AtlasProcessor
+from .atlas import AtlasData, AtlasProcessor, MNIAtlasLoader, DefaultAtlasLoader
 from .mesh import TetMesh, MeshGenerator
 from .fem import TumorGrowthSolver, TumorState, MaterialProperties, SolverConfig
 from .transforms import SpatialTransform, compute_transform_from_simulation
+from .biophysical_constraints import DEFAULT_TUMOR_ORIGIN_MNI
 
 
 class MRISequence(Enum):
@@ -58,8 +71,12 @@ class TumorParameters:
     (e.g., pilocytic astrocytoma or medulloblastoma) that grows as a solid
     mass filling ~30% of the posterior fossa with significant tissue displacement.
 
+    The default tumor center is at MNI coordinates (2.0, -49.0, -35.0),
+    located in the vermis/fourth ventricle region of the posterior fossa.
+
     Attributes:
-        center: Tumor seed center in mm (relative to atlas origin).
+        center: Tumor seed center in MNI coordinates (mm).
+                Default: (2.0, -49.0, -35.0) - vermis/fourth ventricle.
         initial_radius: Initial tumor radius in mm.
         initial_density: Initial tumor cell density (0-1).
         proliferation_rate: Cell proliferation rate (1/day).
@@ -69,7 +86,7 @@ class TumorParameters:
         enhancement_ring: Whether tumor has enhancing rim.
     """
 
-    center: Tuple[float, float, float] = (0.0, 0.0, 0.0)
+    center: Tuple[float, float, float] = None  # Will be set to MNI default
     initial_radius: float = 2.5  # Small seed for tumor growth
     initial_density: float = 0.9  # Higher density for solid tumor
     proliferation_rate: float = 0.04  # Higher rate for solid mass growth
@@ -77,6 +94,12 @@ class TumorParameters:
     necrotic_threshold: float = 0.99  # Very high - minimal central necrosis for uniform tumor
     edema_extent: float = 5.0  # Less edema for non-infiltrative tumor
     enhancement_ring: bool = True
+
+    def __post_init__(self):
+        """Set default tumor center to MNI coordinates if not specified."""
+        if self.center is None:
+            # Default to vermis/fourth ventricle in MNI space
+            self.center = tuple(DEFAULT_TUMOR_ORIGIN_MNI.tolist())
 
     def to_material_properties(self) -> MaterialProperties:
         """Convert to FEM material properties."""
@@ -114,10 +137,15 @@ class MRISimulator:
     """
     Simulator for generating synthetic MRI images with tumors.
 
+    Default configuration uses MNI152 space (ICBM 2009c) with:
+    - Non-skull-stripped T1 template for accurate skull boundaries
+    - DTI-based biophysical constraints (HCP1065 fiber orientations)
+    - Posterior fossa restriction (cerebellum + brainstem only)
+
     Pipeline:
-    1. Load atlas data
+    1. Load atlas data (MNI space by default)
     2. Generate FEM mesh (optionally coarse for speed)
-    3. Simulate tumor growth
+    3. Simulate tumor growth with biophysical constraints
     4. Deform atlas based on simulation (interpolated to full resolution)
     5. Generate MRI signal based on tissue properties
 
@@ -141,8 +169,11 @@ class MRISimulator:
         Initialize the MRI simulator.
 
         Args:
-            atlas_data: Loaded SUIT atlas data.
-            tumor_params: Tumor simulation parameters.
+            atlas_data: Loaded atlas data (MNI or SUIT space).
+                       Use MNIAtlasLoader() for default MNI space configuration
+                       with non-skull-stripped T1 and DTI constraints.
+            tumor_params: Tumor simulation parameters. If None, uses default
+                         TumorParameters with MNI tumor origin (2, -49, -35).
             relaxation_params: MRI relaxation parameters per tissue.
             solver_config: Solver configuration for performance/accuracy tradeoffs.
                           Defaults to SolverConfig.default() which uses coarse mesh
