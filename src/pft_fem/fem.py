@@ -696,7 +696,8 @@ class TumorState:
 
 
 # Default coarse mesh voxel size for fast simulation (mm)
-DEFAULT_COARSE_MESH_VOXEL_SIZE = 3.0
+# Increased from 3.0 to 4.0 for faster simulation with acceptable accuracy
+DEFAULT_COARSE_MESH_VOXEL_SIZE = 4.0
 
 
 @dataclass
