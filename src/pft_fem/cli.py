@@ -1,5 +1,11 @@
 """
 Command-line interface for PFT_FEM simulation pipeline.
+
+Default configuration uses MNI152 space (ICBM 2009c) with:
+- Non-skull-stripped T1 template for skull boundary constraints
+- HCP1065 DTI-based fiber orientations for anisotropic tissue properties
+- Posterior fossa restriction (cerebellum + brainstem)
+- Tumor origin at MNI coordinates (2, -49, -35) - vermis/fourth ventricle
 """
 
 import argparse
@@ -34,7 +40,13 @@ def main(args: Optional[list] = None) -> int:
         "-a", "--atlas",
         type=Path,
         default=None,
-        help="Path to SUIT atlas directory (uses synthetic if not provided)",
+        help="Path to atlas directory. Uses MNI152 by default; use --use-suit for SUIT space.",
+    )
+
+    parser.add_argument(
+        "--use-suit",
+        action="store_true",
+        help="Use SUIT cerebellar atlas instead of MNI152 (default: MNI152)",
     )
 
     parser.add_argument(
@@ -48,9 +60,9 @@ def main(args: Optional[list] = None) -> int:
         "--tumor-center",
         type=float,
         nargs=3,
-        default=[0.0, 0.0, 0.0],
+        default=None,  # Will use MNI default (2.0, -49.0, -35.0)
         metavar=("X", "Y", "Z"),
-        help="Tumor seed center in mm",
+        help="Tumor seed center in MNI mm (default: 2.0 -49.0 -35.0 = vermis)",
     )
 
     parser.add_argument(
@@ -113,8 +125,9 @@ def main(args: Optional[list] = None) -> int:
 def run_simulation(args: argparse.Namespace) -> int:
     """Run the simulation with parsed arguments."""
     import time
-    from .atlas import SUITAtlasLoader
+    from .atlas import SUITAtlasLoader, MNIAtlasLoader
     from .simulation import MRISimulator, TumorParameters, MRISequence
+    from .biophysical_constraints import DEFAULT_TUMOR_ORIGIN_MNI
     from .io import NIfTIWriter
 
     start_time = time.time()
@@ -131,10 +144,24 @@ def run_simulation(args: argparse.Namespace) -> int:
     if args.verbose:
         print("[Step 1/5] Loading Atlas")
         print("-" * 70)
-        print(f"  Source: {args.atlas or 'synthetic (built-in)'}")
+        if args.use_suit:
+            print(f"  Space: SUIT cerebellar space")
+        else:
+            print(f"  Space: MNI152 (ICBM 2009c) with DTI constraints")
+        print(f"  Source: {args.atlas or 'bundled atlas files'}")
 
     step_start = time.time()
-    loader = SUITAtlasLoader(args.atlas)
+
+    # Use MNI atlas by default, SUIT only if explicitly requested
+    if args.use_suit:
+        loader = SUITAtlasLoader(args.atlas)
+    else:
+        loader = MNIAtlasLoader(
+            atlas_dir=args.atlas,
+            use_bundled=True,
+            posterior_fossa_only=True,
+            use_non_skull_stripped=True,  # Use non-skull-stripped T1 for boundaries
+        )
     atlas_data = loader.load()
 
     if args.verbose:
@@ -148,8 +175,15 @@ def run_simulation(args: argparse.Namespace) -> int:
     # =========================================================================
     # STEP 2: Configure Parameters
     # =========================================================================
+    # Use MNI default tumor center if not specified
+    if args.tumor_center is not None:
+        tumor_center = tuple(args.tumor_center)
+    else:
+        # Default to vermis/fourth ventricle in MNI space
+        tumor_center = tuple(DEFAULT_TUMOR_ORIGIN_MNI.tolist())
+
     tumor_params = TumorParameters(
-        center=tuple(args.tumor_center),
+        center=tumor_center,
         initial_radius=args.tumor_radius,
         proliferation_rate=args.proliferation_rate,
         diffusion_rate=args.diffusion_rate,
@@ -159,7 +193,8 @@ def run_simulation(args: argparse.Namespace) -> int:
         print("[Step 2/5] Configuring Simulation Parameters")
         print("-" * 70)
         print("  Tumor Parameters:")
-        print(f"    Center location:     ({tumor_params.center[0]:.1f}, {tumor_params.center[1]:.1f}, {tumor_params.center[2]:.1f}) mm")
+        print(f"    Center (MNI):        ({tumor_params.center[0]:.1f}, {tumor_params.center[1]:.1f}, {tumor_params.center[2]:.1f}) mm")
+        print(f"    Location:            Vermis/fourth ventricle (posterior fossa)")
         print(f"    Initial radius:      {tumor_params.initial_radius:.1f} mm")
         print(f"    Initial density:     {tumor_params.initial_density:.1f}")
         print(f"    Proliferation rate:  {tumor_params.proliferation_rate:.4f} /day")
@@ -168,9 +203,13 @@ def run_simulation(args: argparse.Namespace) -> int:
         print(f"    Edema extent:        {tumor_params.edema_extent:.1f} mm")
         print()
         print("  Biophysical Constraints:")
+        if not args.use_suit:
+            print("    Template:            ICBM 2009c non-skull-stripped T1")
+            print("    DTI constraints:     HCP1065 fiber orientations (enabled)")
+            print("    Skull boundary:      From non-skull-stripped T1")
         print("    Young's modulus:     3000 Pa (brain tissue)")
         print("    Poisson ratio:       0.45 (nearly incompressible)")
-        print("    Boundary condition:  Fixed at domain edges")
+        print("    Boundary condition:  Fixed at skull boundary")
         print()
 
     # Create simulator

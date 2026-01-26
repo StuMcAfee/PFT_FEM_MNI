@@ -1,9 +1,16 @@
 """
-SUIT Atlas loading and processing module.
+Atlas loading and processing module for MNI and SUIT spaces.
 
-The SUIT (Spatially Unbiased Infratentorial Template) atlas provides
-anatomical templates for the cerebellum and brainstem, which form the
-posterior cranial fossa region.
+This module provides atlas loaders for neuroimaging templates:
+- MNIAtlasLoader: Default loader using ICBM-152 MNI space with full brain
+  coverage, non-skull-stripped T1, and DTI-based biophysical constraints.
+- SUITAtlasLoader: Legacy loader for SUIT cerebellar-focused space.
+
+Default configuration uses MNI152 space (ICBM 2009c nonlinear asymmetric)
+which provides:
+- Non-skull-stripped T1 template showing skull boundaries
+- Full posterior fossa coverage (cerebellum + brainstem)
+- Integration with HCP1065 DTI for fiber orientation constraints
 """
 
 from dataclasses import dataclass
@@ -318,6 +325,401 @@ class SUITAtlasLoader:
             if name_lower in region_name.lower():
                 return label_id
         return None
+
+
+class MNIAtlasLoader:
+    """
+    Loader for MNI152 (ICBM-152) atlas data - the default atlas for PFT_FEM.
+
+    Uses the ICBM 2009c nonlinear asymmetric template which provides:
+    - Non-skull-stripped T1 template (skull boundaries visible for constraints)
+    - 1mm isotropic resolution (182×218×182 voxels)
+    - Full brain coverage including posterior fossa (cerebellum + brainstem)
+    - Tissue segmentation (GM, WM, CSF) from FSL FAST
+    - Integration with HCP1065 DTI atlas for fiber orientation
+
+    The non-skull-stripped template is essential for:
+    - Defining skull boundary conditions (fixed displacement)
+    - Realistic tumor mass effect constraints
+    - Accurate CSF space modeling
+
+    This loader is the default for posterior fossa tumor simulations.
+    """
+
+    # MNI152 template dimensions (ICBM 2009c nonlinear asymmetric, 1mm)
+    MNI_SHAPE = (182, 218, 182)
+    MNI_VOXEL_SIZE = (1.0, 1.0, 1.0)
+
+    # Default tumor origin in MNI coordinates (vermis/fourth ventricle region)
+    DEFAULT_TUMOR_ORIGIN = (2.0, -49.0, -35.0)
+
+    # Posterior fossa bounding box in MNI coordinates
+    POSTERIOR_FOSSA_BOUNDS = {
+        'x_min': -55.0, 'x_max': 55.0,    # Left-right (symmetric)
+        'y_min': -100.0, 'y_max': -20.0,  # Anterior-posterior (posterior)
+        'z_min': -70.0, 'z_max': 10.0,    # Superior-inferior (inferior)
+    }
+
+    # Tissue labels from FSL FAST segmentation
+    TISSUE_LABELS = {
+        0: "Background",
+        1: "CSF",
+        2: "Gray Matter",
+        3: "White Matter",
+    }
+
+    # Default path to bundled MNI atlas files
+    DEFAULT_MNI_DIR = Path(__file__).parent.parent.parent / "data" / "atlases" / "MNI152"
+    DEFAULT_DTI_DIR = Path(__file__).parent.parent.parent / "data" / "atlases" / "HCP1065_DTI"
+
+    def __init__(
+        self,
+        atlas_dir: Optional[Path] = None,
+        use_bundled: bool = True,
+        posterior_fossa_only: bool = True,
+        use_non_skull_stripped: bool = True,
+    ):
+        """
+        Initialize the MNI atlas loader.
+
+        Args:
+            atlas_dir: Path to directory containing MNI atlas files.
+                      If None and use_bundled=True, uses bundled atlas files.
+            use_bundled: If True and atlas_dir is None, use bundled atlas files.
+            posterior_fossa_only: If True (default), restrict output to posterior
+                                 fossa region (cerebellum + brainstem).
+            use_non_skull_stripped: If True (default), use the non-skull-stripped
+                                   T1 template to preserve skull boundaries.
+        """
+        if atlas_dir is not None:
+            self.atlas_dir = Path(atlas_dir)
+        elif use_bundled and self.DEFAULT_MNI_DIR.exists():
+            self.atlas_dir = self.DEFAULT_MNI_DIR
+        else:
+            self.atlas_dir = None
+
+        self.posterior_fossa_only = posterior_fossa_only
+        self.use_non_skull_stripped = use_non_skull_stripped
+        self._cached_data: Optional[AtlasData] = None
+
+    def load(self, use_cache: bool = True) -> AtlasData:
+        """
+        Load the MNI atlas data.
+
+        Args:
+            use_cache: If True, return cached data if available.
+
+        Returns:
+            AtlasData containing template, labels, and region information.
+        """
+        if use_cache and self._cached_data is not None:
+            return self._cached_data
+
+        if self.atlas_dir is not None and self.atlas_dir.exists():
+            data = self._load_from_files()
+        else:
+            data = self._generate_synthetic_atlas()
+
+        if use_cache:
+            self._cached_data = data
+
+        return data
+
+    def _load_from_files(self) -> AtlasData:
+        """Load atlas from NIfTI files."""
+        import nibabel as nib
+
+        # Non-skull-stripped T1 template (ICBM 2009c)
+        if self.use_non_skull_stripped:
+            template_path = self.atlas_dir / "mni_icbm152_t1_tal_nlin_asym_09c.nii.gz"
+        else:
+            template_path = self.atlas_dir / "MNI152_T1_1mm_Brain.nii.gz"
+
+        # Tissue segmentation labels
+        labels_path = self.atlas_dir / "MNI152_T1_1mm_Brain_FAST_seg.nii.gz"
+
+        # Fallback paths if primary not found
+        if not template_path.exists():
+            # Try skull-stripped as fallback
+            template_path = self.atlas_dir / "MNI152_T1_1mm_Brain.nii.gz"
+            if not template_path.exists():
+                template_path = self.atlas_dir / "MNI152_T1_1mm.nii.gz"
+
+        if not template_path.exists():
+            raise FileNotFoundError(
+                f"MNI template file not found in {self.atlas_dir}. "
+                f"Expected: mni_icbm152_t1_tal_nlin_asym_09c.nii.gz or MNI152_T1_1mm_Brain.nii.gz"
+            )
+
+        # Load template
+        template_img = nib.load(template_path)
+        template_data = np.asarray(template_img.get_fdata(), dtype=np.float32)
+        affine = template_img.affine.astype(np.float64)
+
+        # Load or generate labels
+        if labels_path.exists():
+            labels_img = nib.load(labels_path)
+            labels_data = np.asarray(labels_img.get_fdata(), dtype=np.int32)
+            # Resize labels to match template if needed
+            if labels_data.shape != template_data.shape:
+                from scipy import ndimage
+                zoom_factors = np.array(template_data.shape) / np.array(labels_data.shape)
+                labels_data = ndimage.zoom(labels_data.astype(float), zoom_factors, order=0).astype(np.int32)
+        else:
+            # Generate labels from template intensities
+            labels_data = self._segment_from_template(template_data)
+
+        voxel_size = tuple(np.abs(np.diag(affine)[:3]).tolist())
+
+        # Apply posterior fossa mask if requested
+        if self.posterior_fossa_only:
+            template_data, labels_data = self._apply_posterior_fossa_mask(
+                template_data, labels_data, affine
+            )
+
+        regions = self._extract_regions(labels_data, voxel_size)
+
+        return AtlasData(
+            template=template_data,
+            labels=labels_data,
+            affine=affine,
+            voxel_size=voxel_size,
+            shape=template_data.shape,
+            regions=regions,
+        )
+
+    def _segment_from_template(self, template: NDArray[np.float32]) -> NDArray[np.int32]:
+        """Generate tissue segmentation from template intensities."""
+        labels = np.zeros(template.shape, dtype=np.int32)
+
+        # Simple intensity-based segmentation
+        nonzero = template > 0
+        if np.sum(nonzero) == 0:
+            return labels
+
+        # Use percentiles for thresholds
+        vals = template[nonzero]
+        p20 = np.percentile(vals, 20)
+        p50 = np.percentile(vals, 50)
+        p80 = np.percentile(vals, 80)
+
+        # CSF: low intensity
+        labels[(template > 0) & (template < p20)] = 1
+        # Gray matter: medium intensity
+        labels[(template >= p20) & (template < p50)] = 2
+        # White matter: high intensity
+        labels[(template >= p50)] = 3
+
+        return labels
+
+    def _apply_posterior_fossa_mask(
+        self,
+        template: NDArray[np.float32],
+        labels: NDArray[np.int32],
+        affine: NDArray[np.float64],
+    ) -> Tuple[NDArray[np.float32], NDArray[np.int32]]:
+        """Apply posterior fossa mask to restrict to cerebellum + brainstem."""
+        shape = template.shape
+        bounds = self.POSTERIOR_FOSSA_BOUNDS
+
+        # Compute voxel coordinates for posterior fossa bounds
+        inv_affine = np.linalg.inv(affine)
+
+        # Create mask
+        mask = np.zeros(shape, dtype=bool)
+
+        for i in range(shape[0]):
+            for j in range(shape[1]):
+                for k in range(shape[2]):
+                    # Convert voxel to MNI physical coordinates
+                    voxel = np.array([i, j, k, 1.0])
+                    mni = (affine @ voxel)[:3]
+
+                    # Check if within posterior fossa bounds
+                    in_bounds = (
+                        bounds['x_min'] <= mni[0] <= bounds['x_max'] and
+                        bounds['y_min'] <= mni[1] <= bounds['y_max'] and
+                        bounds['z_min'] <= mni[2] <= bounds['z_max']
+                    )
+
+                    if in_bounds:
+                        mask[i, j, k] = True
+
+        # Apply mask - zero out regions outside posterior fossa
+        template_masked = template.copy()
+        labels_masked = labels.copy()
+
+        # Keep original data within mask, but set non-masked regions
+        # to preserve skull boundary info if using non-skull-stripped
+        if not self.use_non_skull_stripped:
+            template_masked[~mask] = 0
+        labels_masked[~mask] = 0
+
+        return template_masked, labels_masked
+
+    def _generate_synthetic_atlas(
+        self,
+        shape: Tuple[int, int, int] = None,
+        voxel_size: Tuple[float, float, float] = None,
+    ) -> AtlasData:
+        """
+        Generate synthetic MNI atlas data for testing.
+
+        Creates a simplified posterior fossa representation with:
+        - Cerebellar hemispheres (left and right)
+        - Vermis (midline)
+        - Brainstem
+        - Fourth ventricle
+        - Skull boundary (if non-skull-stripped mode)
+        """
+        import warnings
+        warnings.warn(
+            "MNI atlas files not found. Using synthetic atlas. "
+            "For accurate results, add MNI152 files to data/atlases/MNI152/",
+            UserWarning
+        )
+
+        if shape is None:
+            shape = self.MNI_SHAPE if not self.posterior_fossa_only else (110, 130, 80)
+        if voxel_size is None:
+            voxel_size = self.MNI_VOXEL_SIZE
+
+        template = np.zeros(shape, dtype=np.float32)
+        labels = np.zeros(shape, dtype=np.int32)
+
+        # Create coordinate grids
+        x, y, z = np.ogrid[:shape[0], :shape[1], :shape[2]]
+        center = np.array([shape[0] // 2, shape[1] // 2, shape[2] // 2])
+
+        # Shift center for posterior fossa focus
+        pf_center = center + np.array([0, -20, -15])
+
+        # Skull boundary (ellipsoid)
+        if self.use_non_skull_stripped:
+            skull_dist = ((x - center[0]) / (shape[0] * 0.45)) ** 2 + \
+                        ((y - center[1]) / (shape[1] * 0.45)) ** 2 + \
+                        ((z - center[2]) / (shape[2] * 0.4)) ** 2
+            skull_shell = (skull_dist > 0.85) & (skull_dist < 1.0)
+            template[skull_shell] = 200.0  # Bright skull
+
+        # Left cerebellar hemisphere
+        left_center = pf_center + np.array([-20, 0, 0])
+        left_dist = ((x - left_center[0]) / 25) ** 2 + \
+                    ((y - left_center[1]) / 30) ** 2 + \
+                    ((z - left_center[2]) / 18) ** 2
+        left_mask = left_dist < 1
+
+        # Right cerebellar hemisphere
+        right_center = pf_center + np.array([20, 0, 0])
+        right_dist = ((x - right_center[0]) / 25) ** 2 + \
+                     ((y - right_center[1]) / 30) ** 2 + \
+                     ((z - right_center[2]) / 18) ** 2
+        right_mask = right_dist < 1
+
+        # Vermis (midline structure)
+        vermis_dist = ((x - pf_center[0]) / 10) ** 2 + \
+                      ((y - pf_center[1]) / 25) ** 2 + \
+                      ((z - pf_center[2]) / 15) ** 2
+        vermis_mask = vermis_dist < 1
+
+        # Brainstem (cylindrical, anterior to cerebellum)
+        brainstem_center = pf_center + np.array([0, -25, 10])
+        brainstem_dist = ((x - brainstem_center[0]) / 10) ** 2 + \
+                         ((y - brainstem_center[1]) / 10) ** 2
+        brainstem_mask = (brainstem_dist < 1) & \
+                        (z > pf_center[2] - 20) & (z < pf_center[2] + 30)
+
+        # Fourth ventricle
+        ventricle_center = pf_center + np.array([0, -12, 0])
+        ventricle_dist = ((x - ventricle_center[0]) / 5) ** 2 + \
+                         ((y - ventricle_center[1]) / 4) ** 2 + \
+                         ((z - ventricle_center[2]) / 8) ** 2
+        ventricle_mask = ventricle_dist < 1
+
+        # Assign tissue labels (FSL FAST convention)
+        # 1=CSF, 2=GM, 3=WM
+        labels[ventricle_mask] = 1  # CSF
+        labels[left_mask | right_mask | vermis_mask] = 2  # Gray matter (cerebellar cortex)
+        labels[brainstem_mask & ~ventricle_mask] = 3  # White matter
+
+        # Create template intensities
+        # T1 contrast: WM bright, GM medium, CSF dark
+        template[labels == 3] = 150.0  # White matter
+        template[labels == 2] = 100.0  # Gray matter
+        template[labels == 1] = 30.0   # CSF
+
+        # Add some noise for realism
+        noise = np.random.normal(0, 3, shape).astype(np.float32)
+        template = np.clip(template + noise * (template > 0), 0, 255)
+
+        # Create MNI-space affine matrix
+        affine = np.eye(4, dtype=np.float64)
+        affine[0, 0] = voxel_size[0]
+        affine[1, 1] = voxel_size[1]
+        affine[2, 2] = voxel_size[2]
+        # Center at origin (AC) with posterior-inferior offset for posterior fossa
+        affine[0, 3] = -shape[0] * voxel_size[0] / 2
+        affine[1, 3] = -shape[1] * voxel_size[1] / 2
+        affine[2, 3] = -shape[2] * voxel_size[2] / 2
+
+        regions = self._extract_regions(labels, voxel_size)
+
+        return AtlasData(
+            template=template,
+            labels=labels,
+            affine=affine,
+            voxel_size=voxel_size,
+            shape=shape,
+            regions=regions,
+        )
+
+    def _extract_regions(
+        self,
+        labels: NDArray[np.int32],
+        voxel_size: Tuple[float, float, float],
+    ) -> Dict[int, AtlasRegion]:
+        """Extract region information from label volume."""
+        regions = {}
+        voxel_volume = np.prod(voxel_size)
+
+        unique_labels = np.unique(labels)
+        unique_labels = unique_labels[unique_labels > 0]  # Exclude background
+
+        for label_id in unique_labels:
+            mask = labels == label_id
+            voxel_count = np.sum(mask)
+
+            if voxel_count == 0:
+                continue
+
+            # Calculate centroid
+            coords = np.array(np.where(mask))
+            centroid = tuple(np.mean(coords, axis=1).tolist())
+
+            # Get region name
+            name = self.TISSUE_LABELS.get(int(label_id), f"Tissue {label_id}")
+
+            regions[int(label_id)] = AtlasRegion(
+                label_id=int(label_id),
+                name=name,
+                mask=mask,
+                volume_mm3=float(voxel_count * voxel_volume),
+                centroid=centroid,
+            )
+
+        return regions
+
+    def get_tumor_origin(self) -> Tuple[float, float, float]:
+        """Get the default tumor origin in MNI coordinates."""
+        return self.DEFAULT_TUMOR_ORIGIN
+
+    def get_posterior_fossa_bounds(self) -> Dict[str, float]:
+        """Get the posterior fossa bounding box in MNI coordinates."""
+        return self.POSTERIOR_FOSSA_BOUNDS.copy()
+
+
+# Default atlas loader - use MNI space
+DefaultAtlasLoader = MNIAtlasLoader
 
 
 class AtlasProcessor:
