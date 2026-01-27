@@ -410,25 +410,118 @@ print(f"Number of regions: {len(atlas_data.regions)}")
 
 ### Step 2: Mesh Generation
 
-Converts the volumetric atlas into a tetrahedral finite element mesh.
+Converts the volumetric atlas into a tetrahedral finite element mesh. Two methods are available:
+
+#### DTI-Guided Mesh Generation (Default)
+
+The DTI-guided method creates meshes that follow white matter fiber tract topology, allowing significant mesh coarsening while preserving biophysically meaningful connectivity.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                       STEP 2: MESH GENERATION                               │
+│                   STEP 2: DTI-GUIDED MESH GENERATION                        │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
-│  INPUT                                                                      │
-│  ═════                                                                      │
+│  MULTI-STEP PROCESS:                                                        │
+│  ══════════════════                                                         │
 │                                                                             │
-│  ┌──────────────┐    ┌───────────────┐                                      │
-│  │  AtlasData   │    │  Tissue Mask  │   Binary mask of tissue region       │
-│  │  (from Step 1)│    │  (extracted)  │   to be meshed                       │
-│  └──────────────┘    └───────────────┘                                      │
+│  Step 2a: Build White Matter Skeleton                                       │
+│  ─────────────────────────────────────                                      │
+│                                                                             │
+│  ┌───────────────┐    ┌───────────────┐    ┌───────────────────────────┐   │
+│  │ DTI Data      │    │ Tractography  │    │ White Matter Graph        │   │
+│  │ (FA + V1)     │───►│ + Sampling    │───►│ Nodes along fiber tracts  │   │
+│  └───────────────┘    └───────────────┘    └───────────────────────────┘   │
+│                                                                             │
+│     FA Map                Fiber Tracts           WM Skeleton               │
+│    ░░░▓▓▓░░░             ═══════════            ●───●───●                  │
+│    ░░▓███▓░░            /  ════════  \          │\ /│\ /│                  │
+│    ░▓█████▓░    ───►   /  /════════\  \   ───►  ● ─ ● ─ ●                  │
+│    ░░▓███▓░░          (  (══════════)  )        │/ \│/ \│                  │
+│    ░░░▓▓▓░░░           \  \════════/  /         ●───●───●                  │
+│                         \  ════════  /                                      │
+│                                                                             │
+│  Step 2b: Attach Gray Matter Nodes                                          │
+│  ─────────────────────────────────                                          │
+│                                                                             │
+│  ┌───────────────┐    ┌───────────────┐    ┌───────────────────────────┐   │
+│  │ GM Mask       │    │ Surface       │    │ GM Nodes Connected to     │   │
+│  │ (Segmentation)│───►│ Sampling      │───►│ WM Skeleton + Neighbors   │   │
+│  └───────────────┘    └───────────────┘    └───────────────────────────┘   │
+│                                                                             │
+│     GM Cortex             Sampled GM              Connected Graph          │
+│    ○○○○○○○○○○            ○   ○   ○              ○───○───○                  │
+│    ○        ○            │   │   │               \  │  /                   │
+│    ○   WM   ○    ───►    ○   ●   ○       ───►     ○─●─○                    │
+│    ○        ○            │   │   │               /  │  \                   │
+│    ○○○○○○○○○○            ○   ○   ○              ○───○───○                  │
+│                                                                             │
+│  Step 2c: Tetrahedralize                                                    │
+│  ──────────────────────                                                     │
+│                                                                             │
+│  Combined nodes → Delaunay triangulation → Valid FEM mesh                   │
 │                                                                             │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
-│  PROCESSING: Voxel-to-Tetrahedra Conversion                                 │
-│  ══════════════════════════════════════════                                 │
+│  BENEFITS OF DTI-GUIDED APPROACH:                                           │
+│  ════════════════════════════════                                           │
+│                                                                             │
+│  ┌─────────────────────────────┬─────────────────────────────────────────┐ │
+│  │ Aspect                      │ DTI-Guided vs Voxel-Based               │ │
+│  ├─────────────────────────────┼─────────────────────────────────────────┤ │
+│  │ Node count                  │ ~3,000 vs ~5,500 (45% reduction)        │ │
+│  │ Fiber topology              │ Preserved vs Lost                       │ │
+│  │ Tumor diffusion             │ Follows tracts vs Grid artifacts        │ │
+│  │ Coarsening limit            │ ~8-10mm vs ~4mm before artifacts        │ │
+│  │ GM-WM interface             │ Anatomical vs Voxel boundaries          │ │
+│  └─────────────────────────────┴─────────────────────────────────────────┘ │
+│                                                                             │
+│  Default Mesh Statistics:                                                   │
+│  • White matter nodes: ~2,800                                               │
+│  • Gray matter nodes: ~300                                                  │
+│  • Total elements: ~18,000                                                  │
+│  • WM node spacing: 6mm (along fiber tracts)                                │
+│  • GM node spacing: 8mm                                                     │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+**DTI-Guided Code Example:**
+```python
+from pft_fem import DTIGuidedMeshGenerator, DTIMeshConfig
+from pft_fem.biophysical_constraints import BiophysicalConstraints
+
+# Load biophysical constraints (includes DTI data)
+bc = BiophysicalConstraints(posterior_fossa_only=True)
+bc.load_all_constraints()
+
+# Configure DTI mesh generation
+config = DTIMeshConfig(
+    wm_node_spacing=6.0,    # mm - spacing along fiber tracts
+    gm_node_spacing=8.0,    # mm - cortical node spacing
+    fa_threshold=0.2,       # minimum FA for WM tracts
+    min_tract_length=10.0,  # mm - minimum tract length to include
+)
+
+# Generate DTI-guided mesh
+generator = DTIGuidedMeshGenerator(
+    fiber_orientation=bc._fibers,
+    tissue_segmentation=bc._segmentation,
+    config=config,
+    posterior_fossa_only=True,
+)
+
+mesh = generator.generate_mesh()
+print(f"Nodes: {mesh.num_nodes}, Elements: {mesh.num_elements}")
+```
+
+#### Voxel-Based Mesh Generation (Legacy)
+
+The legacy voxel-based method converts each voxel into tetrahedra:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    VOXEL-BASED MESH GENERATION (LEGACY)                     │
+├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
 │   Each voxel is subdivided into 5-6 tetrahedra:                             │
 │                                                                             │
@@ -443,47 +536,10 @@ Converts the volumetric atlas into a tetrahedral finite element mesh.
 │   │/       │/              │ /  \   │/                                      │
 │   └────────┘               └/────\──┘                                       │
 │                                                                             │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│  OUTPUT: TetMesh                                                            │
-│  ══════════════                                                             │
-│                                                                             │
-│  ┌─────────────────────────────────────────────────────────────────────┐   │
-│  │ TetMesh                                                             │   │
-│  ├─────────────────────────────────────────────────────────────────────┤   │
-│  │ nodes:          NDArray[float64]  │ Shape: (N, 3) - XYZ coords      │   │
-│  │ elements:       NDArray[int32]    │ Shape: (M, 4) - Node indices    │   │
-│  │ node_labels:    NDArray[int32]    │ Shape: (N,) - Tissue type       │   │
-│  │ boundary_nodes: NDArray[int32]    │ Surface node indices            │   │
-│  │ node_neighbors: list[set[int]]    │ Adjacency information           │   │
-│  └─────────────────────────────────────────────────────────────────────┘   │
-│                                                                             │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│  VISUALIZATION: Tetrahedral Mesh (2D Cross-Section)                         │
-│  ══════════════════════════════════════════════════                         │
-│                                                                             │
-│  Original Volume Mask          Resulting Mesh                               │
-│  ┌───────────────────┐        ┌───────────────────┐                         │
-│  │ ░░░░░░░░░░░░░░░░░ │        │                   │                         │
-│  │ ░░░░████████░░░░░ │        │    ●───●───●───●  │     ● = Node            │
-│  │ ░░██████████████░ │        │   /│\ /│\ /│\ /│  │     ─ = Edge            │
-│  │ ░████████████████ │  ───►  │  ●─┼─●─┼─●─┼─●─┼  │     △ = Element face   │
-│  │ ░████████████████ │        │   \│/ \│/ \│/ \│  │                         │
-│  │ ░░██████████████░ │        │    ●───●───●───●  │                         │
-│  │ ░░░░████████░░░░░ │        │     \ /│\ /│\ /   │                         │
-│  │ ░░░░░░░░░░░░░░░░░ │        │      ●─┼─●─┼─●    │                         │
-│  └───────────────────┘        └───────────────────┘                         │
-│                                                                             │
-│  Mesh Statistics (typical):                                                 │
-│  • Nodes: ~50,000-200,000                                                   │
-│  • Elements: ~250,000-1,000,000                                             │
-│  • Element quality: >0.1 (aspect ratio)                                     │
-│                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-**Code Example:**
+**Voxel-Based Code Example:**
 ```python
 from pft_fem import MeshGenerator, AtlasProcessor
 
@@ -491,7 +547,7 @@ from pft_fem import MeshGenerator, AtlasProcessor
 processor = AtlasProcessor(atlas_data)
 tissue_mask = processor.get_tissue_mask("cerebellum")
 
-# Generate mesh
+# Generate voxel-based mesh
 generator = MeshGenerator()
 mesh = generator.from_mask(
     mask=tissue_mask,
@@ -506,6 +562,21 @@ quality = mesh.compute_quality_metrics()
 print(f"Number of nodes: {len(mesh.nodes)}")
 print(f"Number of elements: {len(mesh.elements)}")
 print(f"Mean element quality: {quality['mean_quality']:.3f}")
+```
+
+#### Regenerating the Default Solver
+
+To regenerate the precomputed default solver with either method:
+
+```bash
+# DTI-guided mesh (default, recommended)
+python -m pft_fem.create_default_solver --method dti
+
+# Voxel-based mesh (legacy)
+python -m pft_fem.create_default_solver --method voxel
+
+# Custom DTI mesh spacing
+python -m pft_fem.create_default_solver --method dti --wm-spacing 4.0 --gm-spacing 6.0
 ```
 
 ---
