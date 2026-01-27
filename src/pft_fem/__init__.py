@@ -32,6 +32,13 @@ __version__ = "0.1.0"
 
 from .atlas import SUITAtlasLoader, MNIAtlasLoader, DefaultAtlasLoader, AtlasProcessor
 from .mesh import MeshGenerator, TetMesh
+from .dti_mesh import (
+    DTIGuidedMeshGenerator,
+    DTIMeshConfig,
+    WhiteMatterGraph,
+    GrayMatterNodes,
+    create_dti_guided_mesh,
+)
 from .fem import TumorGrowthSolver, MaterialProperties, TissueType, TumorState, SolverConfig
 from .simulation import MRISimulator, TumorParameters, MRISequence, SimulationResult
 from .io import NIfTIWriter, load_nifti, save_nifti
@@ -58,6 +65,12 @@ __all__ = [
     # Mesh generation
     "MeshGenerator",
     "TetMesh",
+    # DTI-guided mesh generation
+    "DTIGuidedMeshGenerator",
+    "DTIMeshConfig",
+    "WhiteMatterGraph",
+    "GrayMatterNodes",
+    "create_dti_guided_mesh",
     # FEM solver
     "TumorGrowthSolver",
     "MaterialProperties",

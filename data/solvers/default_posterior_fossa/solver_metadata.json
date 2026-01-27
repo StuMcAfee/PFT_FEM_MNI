@@ -1,8 +1,8 @@
 {
   "version": "1.2",
   "boundary_condition": "skull_csf_free",
-  "num_nodes": 5563,
-  "num_elements": 22470,
+  "num_nodes": 3068,
+  "num_elements": 18035,
   "has_biophysical_constraints": true,
   "properties": {
     "young_modulus": 3000.0,
@@ -23,7 +23,7 @@
     "amg_strength": "symmetric",
     "diffusion_use_iterative": false,
     "diffusion_tol": 1e-08,
-    "mesh_voxel_size": 4.0,
+    "mesh_voxel_size": 6.0,
     "output_at_full_resolution": true
   }
 }

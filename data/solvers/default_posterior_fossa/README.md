@@ -2,6 +2,16 @@
 
 This directory contains a precomputed FEM solver for posterior fossa tumor simulations.
 
+## Mesh Generation Method
+
+**DTI-guided (fiber-aligned)**
+
+This mesh was generated using DTI-guided mesh generation, which:
+- Places white matter nodes along principal diffusion directions from DTI
+- Connects gray matter nodes to the white matter skeleton
+- Preserves biophysical connectivity for accurate tumor diffusion
+- Allows coarsening while maintaining fiber tract topology
+
 ## Parameters
 
 - **Coordinate space**: MNI152
@@ -9,7 +19,8 @@ This directory contains a precomputed FEM solver for posterior fossa tumor simul
 - **Tissue segmentation**: MNI152 FAST segmentation (GM/WM/CSF)
 - **Fiber orientations**: HCP1065 DTI atlas
 - **Boundary condition**: Skull fixed, CSF free (fourth ventricle can be displaced)
-- **Voxel size**: 1.0 mm isotropic
+- **WM node spacing**: 6.0 mm
+- **GM node spacing**: 8.0 mm
 
 ## Usage
 
@@ -22,7 +33,7 @@ solver = TumorGrowthSolver.load_default()
 # Create initial tumor state
 state = TumorState.initial(
     mesh=solver.mesh,
-    seed_center=[2.0, -64.0, -36.0],  # Vermis/fourth ventricle in MNI coordinates
+    seed_center=[2.0, -49.0, -35.0],  # Vermis/fourth ventricle in MNI coordinates
 )
 
 # Run simulation
@@ -51,5 +62,9 @@ for _ in range(100):
 To regenerate this precomputed solver:
 
 ```bash
+# DTI-guided mesh (default, recommended)
 python -m pft_fem.create_default_solver
+
+# Voxel-based mesh (legacy)
+python -m pft_fem.create_default_solver --method voxel
 ```
