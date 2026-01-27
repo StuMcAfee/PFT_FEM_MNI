@@ -238,21 +238,28 @@ class DTIGuidedMeshGenerator:
         config = self.config
         fa = self.fibers.fractional_anisotropy
         vectors = self.fibers.vectors
-        affine = self.fibers.affine
+        fiber_affine = self.fibers.affine
+        seg_affine = self.segmentation.affine
 
-        # Get WM mask from segmentation
-        wm_mask = self.segmentation.labels == BrainTissue.WHITE_MATTER.value
+        # Get WM mask from segmentation (in segmentation voxel space)
+        wm_mask_seg = self.segmentation.labels == BrainTissue.WHITE_MATTER.value
 
-        # Apply posterior fossa restriction if enabled
+        # Apply posterior fossa restriction if enabled (in segmentation space)
         if self.posterior_fossa_only:
-            pf_mask = self._get_posterior_fossa_mask(wm_mask.shape)
-            wm_mask = wm_mask & pf_mask
+            pf_mask = self._get_posterior_fossa_mask(wm_mask_seg.shape, seg_affine)
+            wm_mask_seg = wm_mask_seg & pf_mask
 
-        # High-FA mask for seeding
-        high_fa_mask = (fa > config.fa_threshold) & wm_mask
+        # Resample WM mask to fiber space for use with FA data
+        # This is critical: FA and WM mask may have different shapes/affines
+        wm_mask_fiber = self._resample_mask_to_fiber_space(
+            wm_mask_seg, seg_affine, fa.shape, fiber_affine
+        )
 
-        # Generate seed points
-        seeds = self._generate_tract_seeds(high_fa_mask, fa, affine)
+        # High-FA mask for seeding (now both are in fiber voxel space)
+        high_fa_mask = (fa > config.fa_threshold) & wm_mask_fiber
+
+        # Generate seed points (in physical coordinates)
+        seeds = self._generate_tract_seeds(high_fa_mask, fa, fiber_affine)
         print(f"    Generated {len(seeds)} tract seeds")
 
         # Trace streamlines from seeds
@@ -267,8 +274,9 @@ class DTIGuidedMeshGenerator:
 
         for seed in seeds:
             # Trace in both directions from seed
-            forward = self._trace_streamline(seed, vectors, fa, affine, wm_mask, direction=1)
-            backward = self._trace_streamline(seed, vectors, fa, affine, wm_mask, direction=-1)
+            # Pass wm_mask_seg (segmentation space) - _trace_streamline handles coordinate conversion
+            forward = self._trace_streamline(seed, vectors, fa, fiber_affine, wm_mask_seg, direction=1)
+            backward = self._trace_streamline(seed, vectors, fa, fiber_affine, wm_mask_seg, direction=-1)
 
             # Combine into single tract (backward reversed + forward)
             if len(backward) > 1:
@@ -288,7 +296,7 @@ class DTIGuidedMeshGenerator:
 
             # Sample nodes along tract at regular spacing
             sampled_nodes, sampled_fa, sampled_dirs = self._sample_tract_nodes(
-                tract_points, vectors, fa, affine, config.wm_node_spacing
+                tract_points, vectors, fa, fiber_affine, config.wm_node_spacing
             )
 
             if len(sampled_nodes) < 2:
@@ -312,7 +320,7 @@ class DTIGuidedMeshGenerator:
             # Fallback: sample WM voxels directly
             print("    Warning: No tracts found, falling back to WM voxel sampling")
             all_nodes, all_fa, all_directions, all_tract_ids, edges = self._fallback_wm_sampling(
-                wm_mask, fa, vectors, affine
+                wm_mask_seg, fa, vectors, fiber_affine
             )
 
         # Add cross-tract connections for nearby nodes
@@ -497,36 +505,118 @@ class DTIGuidedMeshGenerator:
     # Helper methods
     # -------------------------------------------------------------------------
 
-    def _get_posterior_fossa_mask(self, shape: Tuple[int, ...]) -> NDArray[np.bool_]:
-        """Create mask for posterior fossa region in voxel space."""
-        affine = self.segmentation.affine
+    def _get_posterior_fossa_mask(
+        self,
+        shape: Tuple[int, ...],
+        affine: Optional[NDArray[np.float64]] = None,
+    ) -> NDArray[np.bool_]:
+        """Create mask for posterior fossa region in voxel space.
+
+        Args:
+            shape: Shape of the output mask
+            affine: Affine transformation matrix to convert voxel to physical coords.
+                   If None, uses segmentation affine or a standard MNI affine.
+
+        Returns:
+            Boolean mask where True indicates voxels in posterior fossa
+        """
         if affine is None:
-            # Assume standard MNI affine
+            affine = self.segmentation.affine
+        if affine is None:
+            # Assume standard MNI affine (1mm isotropic, origin at center)
             affine = np.eye(4)
             affine[:3, 3] = [-90, -126, -72]
 
-        mask = np.zeros(shape, dtype=bool)
         bounds = POSTERIOR_FOSSA_BOUNDS_MNI
 
-        # Convert bounds to voxel coordinates
-        inv_affine = np.linalg.inv(affine)
+        # Vectorized implementation for efficiency
+        # Create coordinate grids
+        i_coords, j_coords, k_coords = np.meshgrid(
+            np.arange(shape[0]),
+            np.arange(shape[1]),
+            np.arange(shape[2]),
+            indexing='ij'
+        )
 
-        for i in range(shape[0]):
-            for j in range(shape[1]):
-                for k in range(shape[2]):
-                    # Voxel to physical
-                    phys = affine @ np.array([i, j, k, 1])
-                    x, y, z = phys[:3]
+        # Convert all voxel coordinates to physical coordinates at once
+        # Physical = affine @ [i, j, k, 1]^T
+        x_phys = affine[0, 0] * i_coords + affine[0, 1] * j_coords + affine[0, 2] * k_coords + affine[0, 3]
+        y_phys = affine[1, 0] * i_coords + affine[1, 1] * j_coords + affine[1, 2] * k_coords + affine[1, 3]
+        z_phys = affine[2, 0] * i_coords + affine[2, 1] * j_coords + affine[2, 2] * k_coords + affine[2, 3]
 
-                    # Check bounds
-                    in_bounds = (
-                        bounds['x_min'] <= x <= bounds['x_max'] and
-                        bounds['y_min'] <= y <= bounds['y_max'] and
-                        bounds['z_min'] <= z <= bounds['z_max']
-                    )
-                    mask[i, j, k] = in_bounds
+        # Check bounds (vectorized)
+        mask = (
+            (x_phys >= bounds['x_min']) & (x_phys <= bounds['x_max']) &
+            (y_phys >= bounds['y_min']) & (y_phys <= bounds['y_max']) &
+            (z_phys >= bounds['z_min']) & (z_phys <= bounds['z_max'])
+        )
 
         return mask
+
+    def _resample_mask_to_fiber_space(
+        self,
+        mask_seg: NDArray[np.bool_],
+        seg_affine: Optional[NDArray[np.float64]],
+        fiber_shape: Tuple[int, ...],
+        fiber_affine: Optional[NDArray[np.float64]],
+    ) -> NDArray[np.bool_]:
+        """Resample a mask from segmentation space to fiber space.
+
+        This handles the case where segmentation and fiber data have different
+        shapes and/or affine matrices.
+
+        Args:
+            mask_seg: Boolean mask in segmentation voxel space
+            seg_affine: Affine for segmentation space
+            fiber_shape: Target shape in fiber voxel space
+            fiber_affine: Affine for fiber space
+
+        Returns:
+            Boolean mask resampled to fiber voxel space
+        """
+        # Handle None affines
+        if seg_affine is None:
+            seg_affine = np.eye(4)
+            seg_affine[:3, 3] = [-90, -126, -72]
+        if fiber_affine is None:
+            fiber_affine = np.eye(4)
+            fiber_affine[:3, 3] = [-90, -126, -72]
+
+        # Check if shapes and affines are the same (common case)
+        if (mask_seg.shape == fiber_shape[:3] and
+            np.allclose(seg_affine, fiber_affine, atol=1e-6)):
+            return mask_seg
+
+        # Need to resample: for each fiber voxel, find corresponding segmentation voxel
+        inv_seg_affine = np.linalg.inv(seg_affine)
+
+        # Create coordinate grids in fiber space
+        i_f, j_f, k_f = np.meshgrid(
+            np.arange(fiber_shape[0]),
+            np.arange(fiber_shape[1]),
+            np.arange(fiber_shape[2]),
+            indexing='ij'
+        )
+
+        # Convert fiber voxels to physical coordinates
+        x_phys = fiber_affine[0, 0] * i_f + fiber_affine[0, 1] * j_f + fiber_affine[0, 2] * k_f + fiber_affine[0, 3]
+        y_phys = fiber_affine[1, 0] * i_f + fiber_affine[1, 1] * j_f + fiber_affine[1, 2] * k_f + fiber_affine[1, 3]
+        z_phys = fiber_affine[2, 0] * i_f + fiber_affine[2, 1] * j_f + fiber_affine[2, 2] * k_f + fiber_affine[2, 3]
+
+        # Convert physical to segmentation voxel coordinates
+        i_s = inv_seg_affine[0, 0] * x_phys + inv_seg_affine[0, 1] * y_phys + inv_seg_affine[0, 2] * z_phys + inv_seg_affine[0, 3]
+        j_s = inv_seg_affine[1, 0] * x_phys + inv_seg_affine[1, 1] * y_phys + inv_seg_affine[1, 2] * z_phys + inv_seg_affine[1, 3]
+        k_s = inv_seg_affine[2, 0] * x_phys + inv_seg_affine[2, 1] * y_phys + inv_seg_affine[2, 2] * z_phys + inv_seg_affine[2, 3]
+
+        # Round to nearest voxel and clip to valid range
+        i_s = np.clip(np.round(i_s).astype(int), 0, mask_seg.shape[0] - 1)
+        j_s = np.clip(np.round(j_s).astype(int), 0, mask_seg.shape[1] - 1)
+        k_s = np.clip(np.round(k_s).astype(int), 0, mask_seg.shape[2] - 1)
+
+        # Sample the segmentation mask at these locations
+        mask_fiber = mask_seg[i_s, j_s, k_s]
+
+        return mask_fiber
 
     def _generate_tract_seeds(
         self,
@@ -595,28 +685,45 @@ class DTIGuidedMeshGenerator:
         step_size = config.step_size * direction
         angle_threshold_rad = np.radians(config.angle_threshold)
 
-        # Get inverse affine for coordinate conversion
+        # Get inverse affine for fiber coordinate conversion
         if affine is not None:
             inv_affine = np.linalg.inv(affine)
         else:
             inv_affine = np.eye(4)
+
+        # Get inverse affine for segmentation coordinate conversion (for WM mask lookups)
+        # This is critical: wm_mask comes from segmentation.labels which uses segmentation.affine
+        seg_affine = self.segmentation.affine
+        if seg_affine is not None:
+            inv_seg_affine = np.linalg.inv(seg_affine)
+        else:
+            inv_seg_affine = np.eye(4)
 
         points = [seed.copy()]
         current_pos = seed.copy()
         prev_dir = None
 
         for _ in range(max_steps):
-            # Convert to voxel coordinates
+            # Convert to FIBER voxel coordinates (for FA and vector lookups)
             voxel_h = inv_affine @ np.array([*current_pos, 1])
             voxel = voxel_h[:3]
 
-            # Check bounds
+            # Check bounds in fiber space
             vi, vj, vk = int(round(voxel[0])), int(round(voxel[1])), int(round(voxel[2]))
             if not (0 <= vi < fa.shape[0] and 0 <= vj < fa.shape[1] and 0 <= vk < fa.shape[2]):
                 break
 
-            # Check if still in WM
-            if not wm_mask[vi, vj, vk]:
+            # Convert to SEGMENTATION voxel coordinates (for WM mask lookup)
+            seg_voxel_h = inv_seg_affine @ np.array([*current_pos, 1])
+            seg_voxel = seg_voxel_h[:3]
+            si, sj, sk = int(round(seg_voxel[0])), int(round(seg_voxel[1])), int(round(seg_voxel[2]))
+
+            # Check bounds in segmentation space
+            if not (0 <= si < wm_mask.shape[0] and 0 <= sj < wm_mask.shape[1] and 0 <= sk < wm_mask.shape[2]):
+                break
+
+            # Check if still in WM (using segmentation voxel coordinates)
+            if not wm_mask[si, sj, sk]:
                 break
 
             # Check FA threshold
@@ -716,16 +823,38 @@ class DTIGuidedMeshGenerator:
         wm_mask: NDArray[np.bool_],
         fa: NDArray[np.float32],
         vectors: NDArray[np.float64],
-        affine: Optional[NDArray[np.float64]],
+        fiber_affine: Optional[NDArray[np.float64]],
     ) -> Tuple[List, List, List, List, List]:
-        """Fallback: sample WM voxels directly when tractography fails."""
+        """Fallback: sample WM voxels directly when tractography fails.
+
+        Note: wm_mask is in segmentation space, fa/vectors are in fiber space.
+        This function handles the coordinate transformation between spaces.
+        """
         config = self.config
 
-        # Downsample WM mask
-        zoom_factor = 1.0 / (config.wm_node_spacing / 1.0)  # Assume 1mm voxels
-        wm_coarse = ndimage.zoom(wm_mask.astype(float), zoom_factor, order=0) > 0.5
+        # Get segmentation affine for converting WM mask voxels to physical coords
+        seg_affine = self.segmentation.affine
+        if seg_affine is None:
+            seg_affine = np.eye(4)
+            seg_affine[:3, 3] = [-90, -126, -72]
 
-        # Get voxel coordinates
+        # Get inverse fiber affine for converting physical to fiber voxel coords
+        if fiber_affine is None:
+            fiber_affine = np.eye(4)
+            fiber_affine[:3, 3] = [-90, -126, -72]
+        inv_fiber_affine = np.linalg.inv(fiber_affine)
+
+        # Compute voxel size from segmentation affine
+        seg_voxel_size = np.abs(np.diag(seg_affine)[:3]).mean()
+
+        # Downsample WM mask
+        zoom_factor = seg_voxel_size / config.wm_node_spacing
+        if zoom_factor < 1:
+            wm_coarse = ndimage.zoom(wm_mask.astype(float), zoom_factor, order=0) > 0.5
+        else:
+            wm_coarse = wm_mask
+
+        # Get voxel coordinates (in downsampled segmentation space)
         voxel_coords = np.array(np.where(wm_coarse)).T
 
         all_nodes = []
@@ -734,21 +863,28 @@ class DTIGuidedMeshGenerator:
         all_tract_ids = []
 
         for idx, voxel in enumerate(voxel_coords):
-            # Convert back to original voxel space
-            orig_voxel = (voxel / zoom_factor).astype(int)
-            orig_voxel = np.clip(orig_voxel, 0, np.array(fa.shape) - 1)
-
-            # Convert to physical coordinates
-            if affine is not None:
-                phys = affine @ np.array([*orig_voxel, 1])
-                pos = phys[:3]
+            # Convert back to original segmentation voxel space
+            if zoom_factor < 1:
+                orig_seg_voxel = (voxel / zoom_factor).astype(int)
             else:
-                pos = orig_voxel.astype(np.float64)
+                orig_seg_voxel = voxel
+            orig_seg_voxel = np.clip(orig_seg_voxel, 0, np.array(wm_mask.shape) - 1)
+
+            # Convert segmentation voxel to physical coordinates
+            phys = seg_affine @ np.array([*orig_seg_voxel, 1])
+            pos = phys[:3]
+
+            # Convert physical to fiber voxel coordinates for FA/vector lookup
+            fiber_voxel_h = inv_fiber_affine @ np.array([*pos, 1])
+            fiber_voxel = fiber_voxel_h[:3]
+            fi = int(np.clip(round(fiber_voxel[0]), 0, fa.shape[0] - 1))
+            fj = int(np.clip(round(fiber_voxel[1]), 0, fa.shape[1] - 1))
+            fk = int(np.clip(round(fiber_voxel[2]), 0, fa.shape[2] - 1))
 
             all_nodes.append(pos)
-            all_fa.append(float(fa[orig_voxel[0], orig_voxel[1], orig_voxel[2]]))
+            all_fa.append(float(fa[fi, fj, fk]))
 
-            direction = vectors[orig_voxel[0], orig_voxel[1], orig_voxel[2]].copy()
+            direction = vectors[fi, fj, fk].copy()
             if np.linalg.norm(direction) > 1e-6:
                 direction = direction / np.linalg.norm(direction)
             else:
