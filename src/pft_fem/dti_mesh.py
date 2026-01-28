@@ -688,8 +688,12 @@ class DTIGuidedMeshGenerator:
         # Get inverse affine for fiber coordinate conversion
         if affine is not None:
             inv_affine = np.linalg.inv(affine)
+            # Extract the rotation/scale matrix for transforming vectors from voxel to physical space
+            # The upper-left 3x3 block of the affine transforms directions (not points)
+            voxel_to_physical_rotation = affine[:3, :3]
         else:
             inv_affine = np.eye(4)
+            voxel_to_physical_rotation = np.eye(3)
 
         # Get inverse affine for segmentation coordinate conversion (for WM mask lookups)
         # This is critical: wm_mask comes from segmentation.labels which uses segmentation.affine
@@ -730,8 +734,15 @@ class DTIGuidedMeshGenerator:
             if fa[vi, vj, vk] < config.fa_threshold:
                 break
 
-            # Get fiber direction (trilinear interpolation would be better but keeping simple)
-            fiber_dir = vectors[vi, vj, vk].copy()
+            # Get fiber direction in voxel space (trilinear interpolation would be better but keeping simple)
+            fiber_dir_voxel = vectors[vi, vj, vk].copy()
+            if np.linalg.norm(fiber_dir_voxel) < 1e-6:
+                break
+
+            # Transform vector from voxel coordinate space to physical coordinate space
+            # V1 vectors in NIfTI DTI files are stored in voxel frame (i,j,k directions),
+            # but we need them in physical frame (x,y,z/RAS directions) for stepping
+            fiber_dir = voxel_to_physical_rotation @ fiber_dir_voxel
             if np.linalg.norm(fiber_dir) < 1e-6:
                 break
             fiber_dir = fiber_dir / np.linalg.norm(fiber_dir)
@@ -769,8 +780,11 @@ class DTIGuidedMeshGenerator:
 
         if affine is not None:
             inv_affine = np.linalg.inv(affine)
+            # Extract rotation/scale matrix for transforming vectors from voxel to physical space
+            voxel_to_physical_rotation = affine[:3, :3]
         else:
             inv_affine = np.eye(4)
+            voxel_to_physical_rotation = np.eye(3)
 
         # Compute cumulative arc length
         arc_lengths = [0.0]
@@ -808,7 +822,9 @@ class DTIGuidedMeshGenerator:
                     sampled_nodes.append(pos)
                     sampled_fa.append(float(fa[vi, vj, vk]))
 
-                    direction = vectors[vi, vj, vk].copy()
+                    # Get direction in voxel space and transform to physical space
+                    direction_voxel = vectors[vi, vj, vk].copy()
+                    direction = voxel_to_physical_rotation @ direction_voxel
                     if np.linalg.norm(direction) > 1e-6:
                         direction = direction / np.linalg.norm(direction)
                     else:
@@ -843,6 +859,8 @@ class DTIGuidedMeshGenerator:
             fiber_affine = np.eye(4)
             fiber_affine[:3, 3] = [-90, -126, -72]
         inv_fiber_affine = np.linalg.inv(fiber_affine)
+        # Extract rotation/scale matrix for transforming vectors from voxel to physical space
+        voxel_to_physical_rotation = fiber_affine[:3, :3]
 
         # Compute voxel size from segmentation affine
         seg_voxel_size = np.abs(np.diag(seg_affine)[:3]).mean()
@@ -884,7 +902,9 @@ class DTIGuidedMeshGenerator:
             all_nodes.append(pos)
             all_fa.append(float(fa[fi, fj, fk]))
 
-            direction = vectors[fi, fj, fk].copy()
+            # Get direction in voxel space and transform to physical space
+            direction_voxel = vectors[fi, fj, fk].copy()
+            direction = voxel_to_physical_rotation @ direction_voxel
             if np.linalg.norm(direction) > 1e-6:
                 direction = direction / np.linalg.norm(direction)
             else:
