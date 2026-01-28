@@ -84,6 +84,13 @@ class TumorParameters:
         necrotic_threshold: Density threshold for necrotic core.
         edema_extent: Extent of peritumoral edema in mm.
         enhancement_ring: Whether tumor has enhancing rim.
+        fa_anisotropy_factor: FA-dependent diffusion anisotropy factor (k=4-9 typical).
+        use_volume_preserving_mass_effect: Use physics-based mass effect formulation.
+        use_adaptive_stepping: Enable adaptive time stepping for efficiency.
+        dt_min: Minimum time step for adaptive stepping (days).
+        dt_max: Maximum time step for adaptive stepping (days).
+        use_ventricular_compliance: Model CSF regions as compliant.
+        ventricular_compliance_factor: Stiffness reduction for CSF regions.
     """
 
     center: Tuple[float, float, float] = None  # Will be set to MNI default
@@ -94,6 +101,20 @@ class TumorParameters:
     necrotic_threshold: float = 0.99  # Very high - minimal central necrosis for uniform tumor
     edema_extent: float = 5.0  # Less edema for non-infiltrative tumor
     enhancement_ring: bool = True
+
+    # New parameters for enhanced realism
+    fa_anisotropy_factor: float = 6.0  # FA-dependent diffusion anisotropy (k=4-9)
+    use_volume_preserving_mass_effect: bool = True  # Physics-based mass effect
+    pressure_decay_length_factor: float = 2.0  # For volume-preserving formulation
+
+    # Adaptive time stepping
+    use_adaptive_stepping: bool = True
+    dt_min: float = 0.1  # Minimum time step (days)
+    dt_max: float = 5.0  # Maximum time step (days)
+
+    # Ventricular compliance
+    use_ventricular_compliance: bool = True
+    ventricular_compliance_factor: float = 0.01  # CSF is ~100x softer
 
     def __post_init__(self):
         """Set default tumor center to MNI coordinates if not specified."""
@@ -106,6 +127,14 @@ class TumorParameters:
         return MaterialProperties(
             proliferation_rate=self.proliferation_rate,
             diffusion_coefficient=self.diffusion_rate,
+            fa_anisotropy_factor=self.fa_anisotropy_factor,
+            use_volume_preserving_mass_effect=self.use_volume_preserving_mass_effect,
+            pressure_decay_length_factor=self.pressure_decay_length_factor,
+            use_adaptive_stepping=self.use_adaptive_stepping,
+            dt_min=self.dt_min,
+            dt_max=self.dt_max,
+            use_ventricular_compliance=self.use_ventricular_compliance,
+            ventricular_compliance_factor=self.ventricular_compliance_factor,
         )
 
 

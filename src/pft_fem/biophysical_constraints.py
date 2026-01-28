@@ -48,6 +48,98 @@ POSTERIOR_FOSSA_BOUNDS_MNI = {
     'z_min': -70.0, 'z_max': 10.0,    # Superior-inferior (inferior region)
 }
 
+# =============================================================================
+# Regional Material Property Lookup Tables
+# =============================================================================
+# Literature-based tissue mechanics values vary by anatomical region.
+# These values are derived from:
+# - Budday et al., "Mechanical properties of gray and white matter brain tissue
+#   by indentation", J. Mech. Behav. Biomed. Mater. (2017)
+# - Chatelin et al., "Fifty years of brain tissue mechanical testing: From in
+#   vitro to in vivo investigations", Biorheology (2010)
+# - Kruse et al., "Magnetic resonance elastography of the brain", NeuroImage (2008)
+
+# Young's modulus by anatomical region (Pa)
+# Note: Brain tissue is very soft compared to other tissues
+REGIONAL_STIFFNESS = {
+    # Posterior fossa regions (primary focus)
+    "cerebellum_gm": 1100.0,     # Pa - softer than cortex, more foliated structure
+    "cerebellum_wm": 1500.0,     # Pa - cerebellar white matter
+    "brainstem": 2500.0,         # Pa - stiffer due to dense fiber tracts
+    "pons": 2200.0,              # Pa - part of brainstem
+    "medulla": 2000.0,           # Pa - part of brainstem
+
+    # Supratentorial regions (for completeness)
+    "cortex_gm": 2000.0,         # Pa - cortical gray matter
+    "cortex_wm": 3000.0,         # Pa - cortical white matter
+    "deep_gm": 2200.0,           # Pa - basal ganglia, thalamus
+    "corpus_callosum": 3500.0,   # Pa - dense commissural fibers
+
+    # Special structures
+    "ventricle_wall": 800.0,     # Pa - ependymal layer
+    "choroid_plexus": 600.0,     # Pa - highly vascularized
+
+    # Fallback values
+    "gray_matter": 2000.0,       # Pa - generic gray matter
+    "white_matter": 3000.0,      # Pa - generic white matter
+    "csf": 100.0,                # Pa - fluid (essentially incompressible)
+}
+
+# Poisson ratio by tissue type
+# Brain tissue is nearly incompressible due to high water content
+# Gray matter is more compressible than white matter
+REGIONAL_POISSON_RATIO = {
+    # Gray matter: more compressible (allows volume change under pressure)
+    "cerebellum_gm": 0.38,
+    "cortex_gm": 0.40,
+    "deep_gm": 0.40,
+    "gray_matter": 0.40,
+
+    # White matter: nearly incompressible (maintains volume)
+    "cerebellum_wm": 0.45,
+    "cortex_wm": 0.46,
+    "corpus_callosum": 0.47,
+    "brainstem": 0.45,
+    "white_matter": 0.45,
+
+    # CSF: essentially incompressible fluid
+    "csf": 0.499,
+    "ventricle_wall": 0.48,
+
+    # Fallback
+    "default": 0.45,
+}
+
+# Anatomical region detection based on MNI coordinates
+# These bounding boxes define approximate regions in MNI space
+ANATOMICAL_REGIONS_MNI = {
+    "brainstem": {
+        'x_min': -10.0, 'x_max': 10.0,
+        'y_min': -45.0, 'y_max': -20.0,
+        'z_min': -60.0, 'z_max': -10.0,
+    },
+    "pons": {
+        'x_min': -15.0, 'x_max': 15.0,
+        'y_min': -40.0, 'y_max': -25.0,
+        'z_min': -45.0, 'z_max': -25.0,
+    },
+    "medulla": {
+        'x_min': -10.0, 'x_max': 10.0,
+        'y_min': -45.0, 'y_max': -35.0,
+        'z_min': -60.0, 'z_max': -40.0,
+    },
+    "cerebellum": {
+        'x_min': -55.0, 'x_max': 55.0,
+        'y_min': -100.0, 'y_max': -40.0,
+        'z_min': -60.0, 'z_max': -5.0,
+    },
+    "fourth_ventricle": {
+        'x_min': -8.0, 'x_max': 8.0,
+        'y_min': -50.0, 'y_max': -35.0,
+        'z_min': -45.0, 'z_max': -25.0,
+    },
+}
+
 
 class BrainTissue(Enum):
     """Brain tissue types with distinct mechanical properties."""
@@ -65,6 +157,129 @@ class BrainTissue(Enum):
         mapping = {0: cls.BACKGROUND, 1: cls.CSF, 2: cls.GRAY_MATTER,
                    3: cls.WHITE_MATTER, 4: cls.SKULL, 5: cls.SCALP}
         return mapping.get(label, cls.BACKGROUND)
+
+
+@dataclass
+class RegionalMaterialProperties:
+    """
+    Regional material properties for brain tissue.
+
+    These properties vary by anatomical region based on literature values
+    from Budday et al. (2017), Chatelin et al. (2010), and others.
+
+    Attributes:
+        young_modulus: Young's modulus in Pa
+        poisson_ratio: Poisson's ratio (0-0.5)
+        region_name: Name of the anatomical region
+    """
+
+    young_modulus: float
+    poisson_ratio: float
+    region_name: str
+
+
+def get_anatomical_region(
+    mni_coords: NDArray[np.float64],
+    tissue_type: BrainTissue,
+) -> str:
+    """
+    Determine the anatomical region from MNI coordinates and tissue type.
+
+    Args:
+        mni_coords: Coordinates in MNI space [x, y, z]
+        tissue_type: The tissue type at this location
+
+    Returns:
+        String name of the anatomical region
+    """
+    x, y, z = mni_coords
+
+    # Check specific anatomical regions based on MNI coordinates
+    for region_name, bounds in ANATOMICAL_REGIONS_MNI.items():
+        if (bounds['x_min'] <= x <= bounds['x_max'] and
+            bounds['y_min'] <= y <= bounds['y_max'] and
+            bounds['z_min'] <= z <= bounds['z_max']):
+
+            # Refine based on tissue type
+            if region_name == "cerebellum":
+                if tissue_type == BrainTissue.WHITE_MATTER:
+                    return "cerebellum_wm"
+                else:
+                    return "cerebellum_gm"
+            elif region_name == "fourth_ventricle":
+                return "csf"
+            else:
+                return region_name
+
+    # Fall back to generic tissue-based naming
+    if tissue_type == BrainTissue.WHITE_MATTER:
+        return "white_matter"
+    elif tissue_type == BrainTissue.GRAY_MATTER:
+        return "gray_matter"
+    elif tissue_type == BrainTissue.CSF:
+        return "csf"
+    else:
+        return "gray_matter"  # Default
+
+
+def get_regional_properties(
+    mni_coords: NDArray[np.float64],
+    tissue_type: BrainTissue,
+) -> RegionalMaterialProperties:
+    """
+    Get regional material properties based on MNI coordinates and tissue type.
+
+    This function uses literature-based values that vary by anatomical region:
+    - Cerebellum gray matter is softer than cortical gray matter
+    - Brainstem is stiffer due to dense fiber tracts
+    - White matter is nearly incompressible (high Poisson ratio)
+
+    Args:
+        mni_coords: Coordinates in MNI space [x, y, z]
+        tissue_type: The tissue type at this location
+
+    Returns:
+        RegionalMaterialProperties with Young's modulus and Poisson ratio
+    """
+    region = get_anatomical_region(mni_coords, tissue_type)
+
+    # Look up regional stiffness
+    young_modulus = REGIONAL_STIFFNESS.get(region, REGIONAL_STIFFNESS["gray_matter"])
+
+    # Look up regional Poisson ratio
+    poisson_ratio = REGIONAL_POISSON_RATIO.get(region, REGIONAL_POISSON_RATIO["default"])
+
+    return RegionalMaterialProperties(
+        young_modulus=young_modulus,
+        poisson_ratio=poisson_ratio,
+        region_name=region,
+    )
+
+
+def get_regional_stiffness(region_name: str) -> float:
+    """
+    Get Young's modulus for a specific anatomical region.
+
+    Args:
+        region_name: Name of the anatomical region
+
+    Returns:
+        Young's modulus in Pa
+    """
+    return REGIONAL_STIFFNESS.get(region_name, REGIONAL_STIFFNESS["gray_matter"])
+
+
+def get_regional_poisson_ratio(region_name: str) -> float:
+    """
+    Get Poisson ratio for a specific anatomical region.
+
+    Args:
+        region_name: Name of the anatomical region
+
+    Returns:
+        Poisson ratio (dimensionless, 0-0.5)
+    """
+    return REGIONAL_POISSON_RATIO.get(region_name, REGIONAL_POISSON_RATIO["default"])
 
 
 @dataclass

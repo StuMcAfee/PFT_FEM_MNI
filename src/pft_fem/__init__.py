@@ -54,6 +54,15 @@ from .biophysical_constraints import (
     SpaceTransformer,
     DEFAULT_TUMOR_ORIGIN_MNI,
     POSTERIOR_FOSSA_BOUNDS_MNI,
+    # Regional material properties (literature-based)
+    REGIONAL_STIFFNESS,
+    REGIONAL_POISSON_RATIO,
+    ANATOMICAL_REGIONS_MNI,
+    RegionalMaterialProperties,
+    get_anatomical_region,
+    get_regional_properties,
+    get_regional_stiffness,
+    get_regional_poisson_ratio,
 )
 
 __all__ = [
@@ -101,4 +110,13 @@ __all__ = [
     # Default parameters (MNI space)
     "DEFAULT_TUMOR_ORIGIN_MNI",
     "POSTERIOR_FOSSA_BOUNDS_MNI",
+    # Regional material properties (literature-based)
+    "REGIONAL_STIFFNESS",
+    "REGIONAL_POISSON_RATIO",
+    "ANATOMICAL_REGIONS_MNI",
+    "RegionalMaterialProperties",
+    "get_anatomical_region",
+    "get_regional_properties",
+    "get_regional_stiffness",
+    "get_regional_poisson_ratio",
 ]
