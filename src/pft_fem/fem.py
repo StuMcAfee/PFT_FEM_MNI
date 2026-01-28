@@ -996,11 +996,36 @@ class TumorGrowthSolver:
         return tissue_map.get(dominant, TissueType.GRAY_MATTER)
 
     def _get_skull_boundary_nodes(self) -> NDArray[np.int32]:
-        """Get nodes on the skull boundary for immovable constraint."""
+        """Get nodes on the skull boundary for immovable constraint.
+
+        Uses anatomical skull boundary detection when biophysical constraints
+        are available, but falls back to mesh boundary nodes if:
+        - No biophysical constraints are provided
+        - Anatomical detection returns no or too few boundary nodes
+
+        A minimum of 3 boundary nodes is required to prevent rigid body motion
+        in the FEM solve. Using mesh boundary ensures the matrix is never singular.
+        """
+        min_boundary_nodes = 3  # Minimum to prevent rigid body motion
+
         if self.biophysical_constraints is None:
             return self.mesh.boundary_nodes
 
-        return self.biophysical_constraints.get_boundary_nodes(self.mesh.nodes)
+        # Try anatomical skull boundary detection
+        anatomical_boundary = self.biophysical_constraints.get_boundary_nodes(self.mesh.nodes)
+
+        # Fall back to mesh boundary if anatomical detection fails
+        if len(anatomical_boundary) < min_boundary_nodes:
+            if len(self.mesh.boundary_nodes) >= min_boundary_nodes:
+                return self.mesh.boundary_nodes
+            # If mesh boundary is also insufficient, use all boundary nodes
+            # This ensures the matrix is never singular
+            return np.unique(np.concatenate([
+                anatomical_boundary,
+                self.mesh.boundary_nodes
+            ])).astype(np.int32)
+
+        return anatomical_boundary
 
     def _get_csf_nodes(self) -> NDArray[np.int32]:
         """

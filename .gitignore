@@ -81,3 +81,6 @@ results/
 
 # Exception for precomputed solver mesh (required for package)
 !data/solvers/default_posterior_fossa/mesh.vtu
+
+# Exception for MNI152 atlas files (required for tissue segmentation)
+!data/atlases/MNI152/*.nii.gz
