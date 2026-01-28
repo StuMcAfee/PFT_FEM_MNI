@@ -2033,10 +2033,13 @@ class TumorGrowthSolver:
         rhs = self._mass_matrix @ (density + dt * reaction)
 
         # Use cached LU factorization if available and dt hasn't changed
-        if self._cached_diffusion_dt == dt and self._cached_diffusion_lu is not None:
+        # Use getattr for backward compatibility with precomputed solvers
+        cached_dt = getattr(self, '_cached_diffusion_dt', None)
+        cached_lu = getattr(self, '_cached_diffusion_lu', None)
+        if cached_dt == dt and cached_lu is not None:
             # Fast solve using cached factorization
             try:
-                new_density = self._cached_diffusion_lu.solve(rhs)
+                new_density = cached_lu.solve(rhs)
             except Exception:
                 # Fallback if cached solve fails
                 self._cached_diffusion_lu = None
