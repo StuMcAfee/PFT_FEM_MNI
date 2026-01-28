@@ -523,9 +523,13 @@ class DTIGuidedMeshGenerator:
         if affine is None:
             affine = self.segmentation.affine
         if affine is None:
-            # Assume standard MNI affine (1mm isotropic, origin at center)
-            affine = np.eye(4)
-            affine[:3, 3] = [-90, -126, -72]
+            # Use standard MNI152 1mm affine (radiological convention)
+            affine = np.array([
+                [-1.0,  0.0,  0.0,  90.0],
+                [ 0.0,  1.0,  0.0, -126.0],
+                [ 0.0,  0.0,  1.0, -72.0],
+                [ 0.0,  0.0,  0.0,  1.0],
+            ])
 
         bounds = POSTERIOR_FOSSA_BOUNDS_MNI
 
@@ -574,13 +578,21 @@ class DTIGuidedMeshGenerator:
         Returns:
             Boolean mask resampled to fiber voxel space
         """
-        # Handle None affines
+        # Handle None affines - use standard MNI152 1mm affine
         if seg_affine is None:
-            seg_affine = np.eye(4)
-            seg_affine[:3, 3] = [-90, -126, -72]
+            seg_affine = np.array([
+                [-1.0,  0.0,  0.0,  90.0],
+                [ 0.0,  1.0,  0.0, -126.0],
+                [ 0.0,  0.0,  1.0, -72.0],
+                [ 0.0,  0.0,  0.0,  1.0],
+            ])
         if fiber_affine is None:
-            fiber_affine = np.eye(4)
-            fiber_affine[:3, 3] = [-90, -126, -72]
+            fiber_affine = np.array([
+                [-1.0,  0.0,  0.0,  90.0],
+                [ 0.0,  1.0,  0.0, -126.0],
+                [ 0.0,  0.0,  1.0, -72.0],
+                [ 0.0,  0.0,  0.0,  1.0],
+            ])
 
         # Check if shapes and affines are the same (common case)
         if (mask_seg.shape == fiber_shape[:3] and
@@ -835,13 +847,21 @@ class DTIGuidedMeshGenerator:
         # Get segmentation affine for converting WM mask voxels to physical coords
         seg_affine = self.segmentation.affine
         if seg_affine is None:
-            seg_affine = np.eye(4)
-            seg_affine[:3, 3] = [-90, -126, -72]
+            seg_affine = np.array([
+                [-1.0,  0.0,  0.0,  90.0],
+                [ 0.0,  1.0,  0.0, -126.0],
+                [ 0.0,  0.0,  1.0, -72.0],
+                [ 0.0,  0.0,  0.0,  1.0],
+            ])
 
         # Get inverse fiber affine for converting physical to fiber voxel coords
         if fiber_affine is None:
-            fiber_affine = np.eye(4)
-            fiber_affine[:3, 3] = [-90, -126, -72]
+            fiber_affine = np.array([
+                [-1.0,  0.0,  0.0,  90.0],
+                [ 0.0,  1.0,  0.0, -126.0],
+                [ 0.0,  0.0,  1.0, -72.0],
+                [ 0.0,  0.0,  0.0,  1.0],
+            ])
         inv_fiber_affine = np.linalg.inv(fiber_affine)
 
         # Compute voxel size from segmentation affine
@@ -945,8 +965,12 @@ class DTIGuidedMeshGenerator:
         """Sample gray matter nodes at regular spacing."""
         affine = self.segmentation.affine
         if affine is None:
-            affine = np.eye(4)
-            affine[:3, 3] = [-90, -126, -72]
+            affine = np.array([
+                [-1.0,  0.0,  0.0,  90.0],
+                [ 0.0,  1.0,  0.0, -126.0],
+                [ 0.0,  0.0,  1.0, -72.0],
+                [ 0.0,  0.0,  0.0,  1.0],
+            ])
 
         # Downsample GM mask
         voxel_size = np.abs(np.diag(affine)[:3]).mean()

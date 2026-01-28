@@ -902,8 +902,16 @@ class MNIAtlasLoader:
         wm_prob = wm_prob / total
         csf_prob = csf_prob / total
 
-        affine = np.eye(4)
-        affine[:3, 3] = -np.array(shape) / 2
+        # Use standard MNI152 1mm affine
+        # Maps voxel coordinates to MNI physical coordinates:
+        # - X axis is flipped (radiological convention: +X = left)
+        # - Origin at AC corresponds to voxel (90, 126, 72) for 182x218x182
+        affine = np.array([
+            [-1.0,  0.0,  0.0,  90.0],
+            [ 0.0,  1.0,  0.0, -126.0],
+            [ 0.0,  0.0,  1.0, -72.0],
+            [ 0.0,  0.0,  0.0,  1.0],
+        ])
 
         return TissueSegmentation(
             labels=labels,
