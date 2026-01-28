@@ -2014,6 +2014,10 @@ class TumorGrowthSolver:
         """
         Compute tumor volume above a density threshold.
 
+        Uses density-weighted volume calculation consistent with internal
+        physics computations. Each element contributes its volume multiplied
+        by the average cell density within that element.
+
         Args:
             state: Current tumor state.
             threshold: Density threshold for tumor boundary.
@@ -2026,7 +2030,7 @@ class TumorGrowthSolver:
         for e, elem in enumerate(self.mesh.elements):
             elem_density = np.mean(state.cell_density[elem])
             if elem_density >= threshold:
-                volume += self._element_volumes[e]
+                volume += self._element_volumes[e] * elem_density
 
         return volume
 
