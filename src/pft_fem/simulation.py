@@ -599,14 +599,19 @@ class MRISimulator:
         """
         Create tissue segmentation from (possibly deformed) labels.
 
-        SUIT atlas labels:
-        - Labels 1-28: Cerebellar lobules (cortical gray matter)
-        - Labels 29-34: Deep cerebellar nuclei (gray matter structures)
+        Handles multiple atlas types:
 
-        For the synthetic atlas:
-        - Labels 5-7: Cerebellum (gray matter)
-        - Label 29: Brainstem (treated as white matter)
-        - Label 30: Fourth ventricle (CSF)
+        1. MNI atlas (labels 0-3 with label 0 dominant):
+           Uses template intensity to classify all brain voxels.
+
+        2. SUIT atlas (labels 1-34):
+           - Labels 1-28: Cerebellar lobules (cortical gray matter)
+           - Labels 29-34: Deep cerebellar nuclei (gray matter structures)
+
+        3. Synthetic atlas (labels up to 30):
+           - Labels 5-7: Cerebellum (gray matter)
+           - Label 29: Brainstem (treated as white matter)
+           - Label 30: Fourth ventricle (CSF)
 
         We detect which atlas is being used based on the label values present.
         """
@@ -614,9 +619,42 @@ class MRISimulator:
 
         # Detect atlas type based on labels present
         unique_labels = np.unique(labels)
+        max_label = labels.max()
         has_nuclei_labels = any(l in unique_labels for l in [31, 32, 33, 34])
 
-        if has_nuclei_labels:
+        # Detect MNI-style atlas: labels 0-3 with most brain being label 0
+        # and template data available for intensity-based classification
+        label0_count = np.sum(labels == 0)
+        total_voxels = labels.size
+        is_mni_atlas = (max_label <= 3 and label0_count > 0.5 * total_voxels
+                        and deformed_template is not None)
+
+        if is_mni_atlas:
+            # MNI atlas: Use template intensity to classify brain tissue
+            # Brain mask based on template intensity
+            brain_mask = deformed_template > 10  # Exclude background
+
+            # Classify based on T1 intensity:
+            # - CSF: lowest intensity (dark on T1)
+            # - Gray matter: medium intensity
+            # - White matter: highest intensity (bright on T1)
+            brain_intensities = deformed_template[brain_mask]
+
+            if len(brain_intensities) > 0:
+                # Use percentiles to define tissue boundaries
+                csf_threshold = np.percentile(brain_intensities, 15)
+                gm_wm_threshold = np.percentile(brain_intensities, 60)
+
+                tissue_map["csf"] = brain_mask & (deformed_template < csf_threshold)
+                tissue_map["gray_matter"] = brain_mask & (deformed_template >= csf_threshold) & (deformed_template < gm_wm_threshold)
+                tissue_map["white_matter"] = brain_mask & (deformed_template >= gm_wm_threshold)
+            else:
+                # Fallback: treat all brain as gray matter
+                tissue_map["gray_matter"] = brain_mask
+                tissue_map["white_matter"] = np.zeros_like(labels, dtype=bool)
+                tissue_map["csf"] = np.zeros_like(labels, dtype=bool)
+
+        elif has_nuclei_labels:
             # Real SUIT atlas: labels 1-28 = lobules, 29-34 = nuclei (all gray matter)
             # No explicit white matter or CSF labels
             tissue_map["gray_matter"] = (labels >= 1) & (labels <= 34)
