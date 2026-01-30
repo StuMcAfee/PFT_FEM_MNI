@@ -565,9 +565,9 @@ class TestBiophysicalConstraints:
         """Test that default tumor origin is vermis in MNI space."""
         bc = BiophysicalConstraints(suit_dir=None, fsl_dir=None)
 
-        # Default tumor origin should be [1, -61, -34] (vermis)
+        # Default tumor origin should be [2, -49, -35] (cerebellar vermis in MNI)
         assert_allclose(bc.tumor_origin, DEFAULT_TUMOR_ORIGIN_MNI)
-        assert_allclose(bc.tumor_origin, [1.0, -61.0, -34.0])
+        assert_allclose(bc.tumor_origin, [2.0, -49.0, -35.0])
 
     def test_custom_tumor_origin(self):
         """Test setting custom tumor origin."""
