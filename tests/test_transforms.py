@@ -29,7 +29,7 @@ class TestSpatialTransform:
         assert transform.voxel_size == voxel_size
         assert transform.displacement_field.shape == (*shape, 3)
         assert np.allclose(transform.displacement_field, 0)
-        assert transform.source_space == "SUIT"
+        assert transform.source_space == "MNI"
         assert transform.target_space == "deformed"
 
     def test_identity_transform_default_affine(self):
@@ -408,7 +408,7 @@ class TestComputeTransformFromSimulation:
 
         assert transform.reference_shape == volume_shape
         assert transform.displacement_field.shape == (*volume_shape, 3)
-        assert transform.source_space == "SUIT"
+        assert transform.source_space == "MNI"
         assert transform.target_space == "deformed"
 
         # Check that displacement is roughly 1.5 in regions near nodes

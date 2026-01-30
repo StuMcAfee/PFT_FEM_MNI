@@ -738,45 +738,49 @@ class AtlasProcessor:
         Initialize processor with atlas data.
 
         Args:
-            atlas_data: Loaded atlas data from SUITAtlasLoader.
+            atlas_data: Loaded atlas data (typically from MNIAtlasLoader).
         """
         self.atlas = atlas_data
 
     def get_tissue_mask(
         self,
-        tissue_type: str = "cerebellum",
+        tissue_type: str = "brain",
     ) -> NDArray[np.bool_]:
         """
         Extract a binary mask for a tissue type.
 
+        Uses MNI FAST convention:
+            Label 0: Background
+            Label 1: CSF
+            Label 2: Gray Matter
+            Label 3: White Matter
+
         Args:
-            tissue_type: One of "cerebellum", "lobules", "nuclei", "all".
+            tissue_type: One of "brain", "csf", "gray_matter", "gm",
+                        "white_matter", "wm", "all", "template", "anatomical".
 
         Returns:
             Binary mask array.
         """
         labels = self.atlas.labels
 
-        if tissue_type == "cerebellum" or tissue_type == "all":
-            # All cerebellar structures (lobules + nuclei)
+        if tissue_type == "csf":
+            mask = labels == 1
+        elif tissue_type in ("gray_matter", "gm"):
+            mask = labels == 2
+        elif tissue_type in ("white_matter", "wm"):
+            mask = labels == 3
+        elif tissue_type in ("brain", "all"):
+            # All brain tissue (CSF + GM + WM)
             mask = labels > 0
-        elif tissue_type == "lobules":
-            # Labels 1-28 are cerebellar lobules
-            mask = (labels >= 1) & (labels <= 28)
-        elif tissue_type == "nuclei":
-            # Labels 29-34 are deep cerebellar nuclei
-            mask = (labels >= 29) & (labels <= 34)
-        elif tissue_type == "brainstem":
-            # Not in standard SUIT atlas, return empty mask
-            mask = np.zeros_like(labels, dtype=bool)
-        elif tissue_type == "ventricle":
-            # Not in standard SUIT atlas, return empty mask
-            mask = np.zeros_like(labels, dtype=bool)
-        elif tissue_type == "template" or tissue_type == "anatomical":
-            # Use template image to get all tissue (includes brainstem)
+        elif tissue_type in ("template", "anatomical"):
+            # Use template image to get all tissue
             mask = self.get_anatomical_mask()
         else:
-            raise ValueError(f"Unknown tissue type: {tissue_type}")
+            raise ValueError(
+                f"Unknown tissue type: {tissue_type}. "
+                f"Valid types: csf, gray_matter, gm, white_matter, wm, brain, all, template, anatomical"
+            )
 
         return mask
 

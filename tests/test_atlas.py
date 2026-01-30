@@ -6,7 +6,7 @@ import pytest
 import numpy as np
 from numpy.testing import assert_allclose
 
-from pft_fem.atlas import SUITAtlasLoader, AtlasProcessor, AtlasData, AtlasRegion
+from pft_fem.atlas import SUITAtlasLoader, MNIAtlasLoader, AtlasProcessor, AtlasData, AtlasRegion
 
 
 # =============================================================================
@@ -155,27 +155,27 @@ class TestAtlasProcessor:
         processor = AtlasProcessor(synthetic_atlas)
         assert processor.atlas is synthetic_atlas
 
-    def test_get_tissue_mask_cerebellum(self, synthetic_atlas):
-        """Test getting cerebellum mask."""
+    def test_get_tissue_mask_gray_matter(self, synthetic_atlas):
+        """Test getting gray matter mask (MNI FAST label 2)."""
         processor = AtlasProcessor(synthetic_atlas)
-        mask = processor.get_tissue_mask("cerebellum")
+        mask = processor.get_tissue_mask("gray_matter")
 
         assert mask.dtype == bool
         assert mask.shape == synthetic_atlas.shape
         assert np.any(mask)  # Should have some True values
 
-    def test_get_tissue_mask_brainstem(self, synthetic_atlas):
-        """Test getting brainstem mask."""
+    def test_get_tissue_mask_white_matter(self, synthetic_atlas):
+        """Test getting white matter mask (MNI FAST label 3)."""
         processor = AtlasProcessor(synthetic_atlas)
-        mask = processor.get_tissue_mask("brainstem")
+        mask = processor.get_tissue_mask("white_matter")
 
         assert mask.dtype == bool
         assert mask.shape == synthetic_atlas.shape
 
-    def test_get_tissue_mask_ventricle(self, synthetic_atlas):
-        """Test getting ventricle mask."""
+    def test_get_tissue_mask_csf(self, synthetic_atlas):
+        """Test getting CSF mask (MNI FAST label 1)."""
         processor = AtlasProcessor(synthetic_atlas)
-        mask = processor.get_tissue_mask("ventricle")
+        mask = processor.get_tissue_mask("csf")
 
         assert mask.dtype == bool
         assert mask.shape == synthetic_atlas.shape
@@ -324,17 +324,17 @@ class TestSyntheticAtlasQuality:
         assert len(unique_labels) >= 4
 
     def test_synthetic_regions_separated(self, synthetic_atlas):
-        """Test that major regions are spatially separated."""
+        """Test that tissue types are spatially separated."""
         processor = AtlasProcessor(synthetic_atlas)
 
-        cerebellum = processor.get_tissue_mask("cerebellum")
-        brainstem = processor.get_tissue_mask("brainstem")
-        ventricle = processor.get_tissue_mask("ventricle")
+        gm = processor.get_tissue_mask("gray_matter")
+        wm = processor.get_tissue_mask("white_matter")
+        csf = processor.get_tissue_mask("csf")
 
-        # Regions should not completely overlap
-        # (Some overlap at boundaries is OK)
-        assert not np.array_equal(cerebellum, brainstem)
-        assert not np.array_equal(cerebellum, ventricle)
+        # Tissue types should not overlap (mutually exclusive)
+        assert not np.any(gm & wm)
+        assert not np.any(gm & csf)
+        assert not np.any(wm & csf)
 
     def test_synthetic_template_intensity_range(self, synthetic_atlas):
         """Test that template intensities are in reasonable range."""
@@ -393,16 +393,16 @@ class TestAtlasIntegration:
 
     def test_full_atlas_workflow(self):
         """Test complete atlas loading and processing workflow."""
-        # Load atlas
-        loader = SUITAtlasLoader()
+        # Load atlas (use MNI by default)
+        loader = MNIAtlasLoader()
         atlas = loader.load()
 
         # Process atlas
         processor = AtlasProcessor(atlas)
 
-        # Get masks
-        cerebellum_mask = processor.get_tissue_mask("cerebellum")
-        all_mask = processor.get_tissue_mask("all")
+        # Get masks (MNI tissue types)
+        brain_mask = processor.get_tissue_mask("brain")
+        gm_mask = processor.get_tissue_mask("gray_matter")
 
         # Compute distance field
         dist_field = processor.compute_distance_field()
@@ -417,8 +417,8 @@ class TestAtlasIntegration:
         cropped = processor.crop_to_region()
 
         # Verify all operations completed successfully
-        assert cerebellum_mask is not None
-        assert all_mask is not None
+        assert brain_mask is not None
+        assert gm_mask is not None
         assert dist_field is not None
         assert len(surface_points) > 0
         assert len(bbox) == 2

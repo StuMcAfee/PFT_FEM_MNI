@@ -366,11 +366,11 @@ class NIfTIWriter:
         paths["tumor_mask"] = self.write_mask(result.tumor_mask, "tumor_mask")
         paths["edema_mask"] = self.write_mask(result.edema_mask, "edema_mask")
 
-        # Export spatial transform (SUIT -> deformed) in ANTsPy format
+        # Export spatial transform (MNI -> deformed) in ANTsPy format
         if export_transform and result.spatial_transform is not None:
             transform_paths = self.write_spatial_transform(
                 result.spatial_transform,
-                base_name="suit_to_deformed",
+                base_name="mni_to_deformed",
                 include_inverse=True,
             )
             paths.update({f"transform_{k}": v for k, v in transform_paths.items()})

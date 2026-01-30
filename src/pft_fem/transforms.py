@@ -2,7 +2,7 @@
 Spatial Transform module for tracking and exporting deformations.
 
 Provides functionality to track the complete spatial transform from
-the SUIT template through the simulation process, and export in
+the MNI template through the simulation process, and export in
 ANTsPy-compatible formats.
 """
 
@@ -18,7 +18,7 @@ from numpy.typing import NDArray
 @dataclass
 class SpatialTransform:
     """
-    Complete spatial transform from SUIT template to deformed state.
+    Complete spatial transform from MNI template to deformed state.
 
     Tracks both the affine transformation (template space to physical space)
     and the displacement field (deformation from tumor growth).
@@ -31,7 +31,7 @@ class SpatialTransform:
         displacement_field: 3D displacement field, shape (X, Y, Z, 3) in mm.
         reference_shape: Shape of the reference volume (X, Y, Z).
         voxel_size: Voxel dimensions in mm.
-        source_space: Name of the source coordinate space (e.g., "SUIT").
+        source_space: Name of the source coordinate space (e.g., "MNI").
         target_space: Name of the target coordinate space (e.g., "deformed").
         metadata: Additional transform metadata.
     """
@@ -40,7 +40,7 @@ class SpatialTransform:
     displacement_field: NDArray[np.float32]
     reference_shape: Tuple[int, int, int]
     voxel_size: Tuple[float, float, float]
-    source_space: str = "SUIT"
+    source_space: str = "MNI"
     target_space: str = "deformed"
     metadata: Dict[str, Any] = field(default_factory=dict)
 
@@ -92,7 +92,7 @@ class SpatialTransform:
         displacement: NDArray,
         affine: NDArray[np.float64],
         voxel_size: Optional[Tuple[float, float, float]] = None,
-        source_space: str = "SUIT",
+        source_space: str = "MNI",
         target_space: str = "deformed",
     ) -> "SpatialTransform":
         """
@@ -635,7 +635,7 @@ class ANTsTransformExporter:
     def export_for_antspy(
         self,
         transform: SpatialTransform,
-        base_filename: str = "suit_to_deformed",
+        base_filename: str = "mni_to_deformed",
     ) -> Dict[str, Any]:
         """
         Export transform in format ready for ANTsPy usage.
@@ -677,7 +677,7 @@ affine = ants.read_transform("{paths["affine"]}")
 #     transformlist=[str(paths["displacement_field"]), str(paths["affine"])]
 # )
 
-# For inverse transform (deformed -> SUIT):
+# For inverse transform (deformed -> MNI):
 # inverse_warp = ants.image_read("{paths.get("inverse_displacement", "N/A")}")
 '''
 
@@ -852,7 +852,7 @@ def compute_transform_from_simulation(
         displacement=disp_field,
         affine=output_affine,
         voxel_size=output_voxel_size,
-        source_space="SUIT",
+        source_space="MNI",
         target_space="deformed",
     )
 

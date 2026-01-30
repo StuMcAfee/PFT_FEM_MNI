@@ -599,49 +599,31 @@ class MRISimulator:
         """
         Create tissue segmentation from (possibly deformed) labels.
 
-        Handles multiple atlas types:
+        Uses MNI FAST convention (FSL):
+            Label 0: Background
+            Label 1: CSF
+            Label 2: Gray Matter
+            Label 3: White Matter
 
-        1. MNI atlas (labels 0-3 with label 0 dominant):
-           Uses template intensity to classify all brain voxels.
-
-        2. SUIT atlas (labels 1-34):
-           - Labels 1-28: Cerebellar lobules (cortical gray matter)
-           - Labels 29-34: Deep cerebellar nuclei (gray matter structures)
-
-        3. Synthetic atlas (labels up to 30):
-           - Labels 5-7: Cerebellum (gray matter)
-           - Label 29: Brainstem (treated as white matter)
-           - Label 30: Fourth ventricle (CSF)
-
-        We detect which atlas is being used based on the label values present.
+        Falls back to intensity-based classification if labels are invalid.
         """
         tissue_map = {}
 
-        # Detect atlas type based on labels present
-        unique_labels = np.unique(labels)
-        max_label = labels.max()
-        has_nuclei_labels = any(l in unique_labels for l in [31, 32, 33, 34])
+        # Check if we have valid MNI FAST labels (1=CSF, 2=GM, 3=WM)
+        brain_mask = labels > 0
+        brain_voxel_count = np.sum(brain_mask)
 
-        # Detect MNI-style atlas: labels 0-3 with most brain being label 0
-        # and template data available for intensity-based classification
-        label0_count = np.sum(labels == 0)
-        total_voxels = labels.size
-        is_mni_atlas = (max_label <= 3 and label0_count > 0.5 * total_voxels
-                        and deformed_template is not None)
-
-        if is_mni_atlas:
-            # MNI atlas: Use template intensity to classify brain tissue
-            # Brain mask based on template intensity
-            brain_mask = deformed_template > 10  # Exclude background
-
-            # Classify based on T1 intensity:
-            # - CSF: lowest intensity (dark on T1)
-            # - Gray matter: medium intensity
-            # - White matter: highest intensity (bright on T1)
+        if brain_voxel_count > 1000:
+            # Use MNI FAST labels directly
+            tissue_map["csf"] = labels == 1
+            tissue_map["gray_matter"] = labels == 2
+            tissue_map["white_matter"] = labels == 3
+        elif deformed_template is not None:
+            # Fallback: intensity-based classification when labels are invalid
+            brain_mask = deformed_template > 10
             brain_intensities = deformed_template[brain_mask]
 
             if len(brain_intensities) > 0:
-                # Use percentiles to define tissue boundaries
                 csf_threshold = np.percentile(brain_intensities, 15)
                 gm_wm_threshold = np.percentile(brain_intensities, 60)
 
@@ -649,34 +631,14 @@ class MRISimulator:
                 tissue_map["gray_matter"] = brain_mask & (deformed_template >= csf_threshold) & (deformed_template < gm_wm_threshold)
                 tissue_map["white_matter"] = brain_mask & (deformed_template >= gm_wm_threshold)
             else:
-                # Fallback: treat all brain as gray matter
                 tissue_map["gray_matter"] = brain_mask
                 tissue_map["white_matter"] = np.zeros_like(labels, dtype=bool)
                 tissue_map["csf"] = np.zeros_like(labels, dtype=bool)
-
-        elif has_nuclei_labels:
-            # Real SUIT atlas: labels 1-28 = lobules, 29-34 = nuclei (all gray matter)
-            # No explicit white matter or CSF labels
-            tissue_map["gray_matter"] = (labels >= 1) & (labels <= 34)
+        else:
+            # No valid data - create empty masks
+            tissue_map["gray_matter"] = np.zeros_like(labels, dtype=bool)
             tissue_map["white_matter"] = np.zeros_like(labels, dtype=bool)
             tissue_map["csf"] = np.zeros_like(labels, dtype=bool)
-
-            # Use template intensity to identify CSF (low intensity regions)
-            if deformed_template is not None:
-                template_mask = labels > 0
-                if np.sum(template_mask) > 0:
-                    # CSF typically has very low T1 signal
-                    threshold = np.percentile(deformed_template[template_mask], 10)
-                    tissue_map["csf"] = (deformed_template < threshold) & template_mask
-                    tissue_map["gray_matter"] = tissue_map["gray_matter"] & ~tissue_map["csf"]
-        else:
-            # Synthetic atlas or atlas with explicit tissue labels
-            # Labels 1-28: gray matter (cerebellar lobules)
-            tissue_map["gray_matter"] = (labels >= 1) & (labels <= 28)
-            # Label 29: brainstem/white matter (in synthetic atlas)
-            tissue_map["white_matter"] = labels == 29
-            # Label 30: fourth ventricle/CSF (in synthetic atlas)
-            tissue_map["csf"] = labels == 30
 
         # Map tumor density to voxels (already interpolated from mesh nodes)
         tumor_density = self._interpolate_to_volume(tumor_state.cell_density)
